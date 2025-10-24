@@ -1,164 +1,184 @@
 // ========================================================================
 // FLOOD RISK PREDICTION MODEL USING RANDOM FOREST REGRESSION
 // Bài toán: HỒI QUY - Dự đoán xác suất liên tục từ 0-1
-// Luồng: Load Assets → Extract Features → Train Model → Predict
+// VỚI NỘI SUY NULL SAU KHI PREDICT
 // ========================================================================
 
 // CẤU HÌNH MÔ HÌNH
-var RESOLUTION = 30;  // 30m resolution
-var NUM_TREES = 200;   // Số cây trong Random Forest
-var TILE_SCALE = 16;  // Tăng tốc xử lý
-var TRAIN_SPLIT = 0.7; // 70% train, 30% validation
+var RESOLUTION = 30;
+var NUM_TREES = 200;
+var TRAIN_SPLIT = 0.7;
+var BUFFER_SIZE = 15; // Buffer 15m cho điểm để lấy mẫu tốt hơn
 
-// Tên 13 features từ imageAsset
 var featureNames = [
   'lulc', 'Density_River', 'Density_Road', 'Distan2river', 'Distan2road_met',
   'aspect', 'curvature', 'dem', 'flowDir', 'slope', 'twi', 'NDVI', 'rainfall'
 ];
 
 print('========== FLOOD RISK PREDICTION - RANDOM FOREST REGRESSION ==========');
-print('Problem Type: REGRESSION (continuous probability 0-1)');
-print('Resolution: ' + RESOLUTION + 'm');
-print('Number of trees: ' + NUM_TREES);
-print('Features: 13 bands from imageAsset');
+print('Resolution: ' + RESOLUTION + 'm | Trees: ' + NUM_TREES + ' | Buffer: ' + BUFFER_SIZE + 'm');
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 1: LOAD 3 FILE ASSETS ĐẦU VÀO
+// FUNCTION: NỘI SUY NULL VALUES
 //////////////////////////////////////////////////////////////
 
-print('========== STEP 1: LOADING INPUT ASSETS ==========');
+var interpolateNulls = function(image, bandNames, radius, iterations) {
+  /**
+   * Nội suy các giá trị null trong image bằng focal mean
+   * Chỉ thay thế null values, giữ nguyên các pixel có giá trị
+   * 
+   * @param {ee.Image} image - Image cần nội suy
+   * @param {List} bandNames - Danh sách các band cần nội suy
+   * @param {Number} radius - Bán kính kernel (meters)
+   * @param {Number} iterations - Số lần lặp nội suy
+   */
+  
+  var interpolated = image;
+  
+  for (var i = 0; i < iterations; i++) {
+    var newBands = bandNames.map(function(bandName) {
+      var band = interpolated.select([bandName]);
+      
+      // Tạo mask cho null values (0 = null, 1 = valid)
+      var validMask = band.mask();
+      
+      // Tính focal mean của các pixel xung quanh
+      var filled = band.focal_mean({
+        radius: radius,
+        units: 'meters',
+        kernelType: 'square'
+      });
+      
+      // Chỉ lấy giá trị nội suy cho null pixels
+      // Giữ nguyên giá trị gốc cho valid pixels
+      var result = band.unmask(filled);
+      
+      return result.rename(bandName);
+    });
+    
+    interpolated = ee.Image(newBands);
+  }
+  
+  return interpolated;
+};
 
-// 1.1 Load Study Area (SHP file)
+//////////////////////////////////////////////////////////////
+// FUNCTION: THỐNG KÊ NULL VALUES
+//////////////////////////////////////////////////////////////
+
+var countNullPixels = function(image, bandNames, region, scale, label) {
+  print('\n--- ' + label + ' ---');
+  
+  // Tạo một reducer tổng hợp cho tất cả bands
+  var stats = ee.List(bandNames).map(function(bandName) {
+    var band = image.select([bandName]);
+    
+    // Đếm total pixels (bao gồm cả null)
+    var totalPixels = band.unmask(-9999).reduceRegion({
+      reducer: ee.Reducer.count(),
+      geometry: region,
+      scale: scale,
+      maxPixels: 1e9
+    });
+    
+    // Đếm valid pixels (chỉ những pixel có mask = 1)
+    var validPixels = band.reduceRegion({
+      reducer: ee.Reducer.count(),
+      geometry: region,
+      scale: scale,
+      maxPixels: 1e9
+    });
+    
+    var total = ee.Number(totalPixels.get(bandName));
+    var valid = ee.Number(validPixels.get(bandName));
+    var nullCount = total.subtract(valid);
+    var nullPercent = nullCount.divide(total).multiply(100);
+    
+    return ee.Dictionary({
+      'band': bandName,
+      'total': total,
+      'valid': valid,
+      'null': nullCount,
+      'null_percent': nullPercent
+    });
+  });
+  
+  // In kết quả - GEE sẽ tự động evaluate khi print
+  print(stats);
+};
+
+//////////////////////////////////////////////////////////////
+// BƯỚC 1: LOAD ASSETS
+//////////////////////////////////////////////////////////////
+
+print('\n========== STEP 1: LOADING ASSETS ==========');
+
 if (typeof studyArea === 'undefined') {
-  print('ERROR: studyArea chưa được import!');
-  print('Hướng dẫn: Import SHP file từ Assets tab và đặt tên là "studyArea"');
+  print('ERROR: studyArea not imported!');
 }
-print('✅ Study area loaded');
-
-// 1.2 Load Image Features (13 bands)
 if (typeof imageAsset === 'undefined') {
-  print('ERROR: imageAsset chưa được import!');
-  print('Hướng dẫn: Import Image asset (13 bands) và đặt tên là "imageAsset"');
+  print('ERROR: imageAsset not imported!');
 }
-print('✅ Image asset loaded');
-
-// 1.3 Load Flood Points (CSV với 3 cột: lat, lon, flood)
 if (typeof floodPoints === 'undefined') {
-  print('ERROR: floodPoints chưa được import!');
-  print('Hướng dẫn: Import CSV file (lat, lon, flood) và đặt tên là "floodPoints"');
+  print('ERROR: floodPoints not imported!');
 }
 
-// Đảm bảo geometry được tạo đúng từ lon, lat
+// Tạo geometry từ lon, lat
 var floodPoints = floodPoints.map(function(feature) {
   var lon = ee.Number(feature.get('lon'));
   var lat = ee.Number(feature.get('lat'));
-  // Đảm bảo flood value là số (0 hoặc 1)
   var floodValue = ee.Number(feature.get('flood'));
   return feature.set('flood', floodValue)
                 .setGeometry(ee.Geometry.Point([lon, lat], 'EPSG:4326'));
 });
 
-print('✅ Flood points loaded and geometries created');
-
-// Kiểm tra cấu trúc flood points
-var samplePoint = ee.Feature(floodPoints.first());
-print('Sample flood point properties:', samplePoint.propertyNames());
-print('Sample flood value:', samplePoint.get('flood'));
+print('✅ Assets loaded');
 print('Total flood points:', floodPoints.size());
-
-// Đếm số điểm flood và non-flood
-var floodCount = floodPoints.filter(ee.Filter.eq('flood', 1)).size();
-var nonFloodCount = floodPoints.filter(ee.Filter.eq('flood', 0)).size();
-print('Flood points (flood=1):', floodCount);
-print('Non-flood points (flood=0):', nonFloodCount);
+print('Flood points (1):', floodPoints.filter(ee.Filter.eq('flood', 1)).size());
+print('Non-flood points (0):', floodPoints.filter(ee.Filter.eq('flood', 0)).size());
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 2: TRÍCH XUẤT 13 FEATURES TẠI CÁC ĐIỂM NHÃN
+// BƯỚC 2: EXTRACT FEATURES VỚI BUFFER
 //////////////////////////////////////////////////////////////
 
-print('========== STEP 2: EXTRACTING FEATURES AT LABELED POINTS ==========');
+print('\n========== STEP 2: EXTRACTING FEATURES ==========');
 
-// 2.0 DEBUG: Kiểm tra band names
-print('Expected feature names:', featureNames);
-print('Actual band names in imageAsset:', imageAsset.bandNames());
-
-// 2.1 Chuẩn bị features từ imageAsset
+// Chuẩn bị features
 var features = imageAsset.select(featureNames).clip(studyArea);
 
-// Reproject với scale mong muốn
-features = features.reproject({
-  crs: 'EPSG:4326',
-  scale: RESOLUTION
+// Buffer points để tăng khả năng lấy mẫu
+var floodPointsBuffered = floodPoints.map(function(feature) {
+  var buffered = feature.buffer(BUFFER_SIZE);
+  return buffered.copyProperties(feature, ['flood', 'lat', 'lon']);
 });
 
-print('✅ Features prepared with', featureNames.length, 'bands');
+print('✅ Applied ' + BUFFER_SIZE + 'm buffer to points');
 
-// 2.1.5 DEBUG: Test trên 1 điểm cụ thể
-print('========== DEBUG: TESTING FIRST POINT ==========');
-var firstPoint = ee.Feature(floodPoints.first());
-print('First point properties:', firstPoint.toDictionary());
-
-var testGeom = firstPoint.geometry();
-print('Test geometry coordinates:', testGeom.coordinates());
-
-// Lấy giá trị tại điểm này
-var pixelValues = features.reduceRegion({
-  reducer: ee.Reducer.first(),
-  geometry: testGeom,
-  scale: RESOLUTION,
-  maxPixels: 1e9
-});
-print('🎯 Pixel values at first point:', pixelValues);
-print('🎯 Number of non-null values:', pixelValues.keys().length());
-
-// 2.2 Sample features tại các điểm flood
-print('========== SAMPLING ALL POINTS ==========');
-
+// Sample với buffered points
 var trainingData = features.sampleRegions({
-  collection: floodPoints,
+  collection: floodPointsBuffered,
   properties: ['flood', 'lat', 'lon'],
-  scale: RESOLUTION,
-  tileScale: TILE_SCALE,
-  geometries: true  // Giữ geometry để debug
+  scale: 10,
+  tileScale: 1,
+  geometries: false
 });
 
 print('Total points after sampling:', trainingData.size());
 
-// DEBUG: Xem 3 điểm đầu tiên sau khi sample
-var firstThree = trainingData.limit(3);
-print('First 3 sampled points (check for null values):', firstThree);
-
-// Kiểm tra từng feature xem feature nào bị null
-print('========== CHECKING NULL VALUES PER FEATURE ==========');
+// Kiểm tra null values trong training data
+print('\n--- Checking null values in training samples ---');
 featureNames.forEach(function(bandName) {
   var countNonNull = trainingData.filter(ee.Filter.notNull([bandName])).size();
-  print('  Feature "' + bandName + '" - Non-null points:', countNonNull);
+  print('  ' + bandName + ':', countNonNull);
 });
 
-// 2.3 Lọc bỏ các điểm thiếu dữ liệu
+// Lọc bỏ điểm thiếu dữ liệu
 var requiredColumns = ['flood'].concat(featureNames);
 trainingData = trainingData.filter(ee.Filter.notNull(requiredColumns));
 
-print('✅ Valid training samples after filtering:', trainingData.size());
+print('✅ Valid training samples:', trainingData.size());
 
-// Nếu không có training data, dừng lại và hiển thị visualization
-var validSampleCount = trainingData.size();
-validSampleCount.evaluate(function(count) {
-  if (count === 0) {
-    print('❌ ERROR: NO VALID TRAINING DATA!');
-    print('Possible reasons:');
-    print('  1. Band names mismatch - Check "Expected" vs "Actual" band names above');
-    print('  2. Points outside imageAsset coverage - Check map visualization');
-    print('  3. NoData values in imageAsset at point locations');
-    print('');
-    print('ACTION REQUIRED:');
-    print('  → Check the map to see if points overlap with image data');
-    print('  → Verify band names match exactly (case-sensitive)');
-    print('  → Check if imageAsset has valid data in study area');
-  }
-});
-
-// 2.4 Chia dữ liệu train/validation
+// Chia train/validation
 var withRandom = trainingData.randomColumn('random', 42);
 var training = withRandom.filter(ee.Filter.lt('random', TRAIN_SPLIT));
 var validation = withRandom.filter(ee.Filter.gte('random', TRAIN_SPLIT));
@@ -167,51 +187,36 @@ print('Training samples:', training.size());
 print('Validation samples:', validation.size());
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 3: HUẤN LUYỆN MÔ HÌNH RANDOM FOREST REGRESSION
+// BƯỚC 3: TRAIN MODEL
 //////////////////////////////////////////////////////////////
 
-print('========== STEP 3: TRAINING RANDOM FOREST REGRESSOR ==========');
+print('\n========== STEP 3: TRAINING MODEL ==========');
 
-// SỬ DỤNG REGRESSOR THAY VÌ CLASSIFIER
 var rfRegressor = ee.Classifier.smileRandomForest({
-  numberOfTrees: NUM_TREES,
-  variablesPerSplit: null,      // sqrt(numFeatures) - tự động
+  numberOfTrees: 215,
+  variablesPerSplit: 6,
   minLeafPopulation: 1,
   bagFraction: 0.5,
   seed: 42
-}).setOutputMode('REGRESSION')  // QUAN TRỌNG: Chế độ REGRESSION
+}).setOutputMode('REGRESSION')
   .train({
     features: training,
-    classProperty: 'flood',  // Dù tên là classProperty nhưng đây là giá trị liên tục
+    classProperty: 'flood',
     inputProperties: featureNames
   });
 
-print('✅ Random Forest Regressor trained successfully');
-print('Model configuration:');
-print('  - Mode: REGRESSION (continuous output)');
-print('  - Trees:', NUM_TREES);
-print('  - Input features:', featureNames.length);
+print('✅ Model trained successfully');
 
-// 3.1 Đánh giá trên tập validation
-print('========== VALIDATION METRICS (REGRESSION) ==========');
+//////////////////////////////////////////////////////////////
+// BƯỚC 4: VALIDATION METRICS
+//////////////////////////////////////////////////////////////
+
+print('\n========== STEP 4: VALIDATION METRICS ==========');
 
 var validationPredicted = validation.classify(rfRegressor, 'predicted');
 
-// Tính các metrics cho regression
-var validationMetrics = validationPredicted.select(['flood', 'predicted'])
-  .reduceColumns({
-    reducer: ee.Reducer.spearmansCorrelation().combine({
-      reducer2: ee.Reducer.pearsonsCorrelation(),
-      sharedInputs: true
-    }),
-    selectors: ['flood', 'predicted']
-  });
-
-print('Spearman Correlation:', validationMetrics.get('correlation'));
-print('Pearson Correlation:', validationMetrics.get('correlation1'));
-
-// Tính RMSE và MAE
-var errors = validationPredicted.map(function(f) {
+// Tính toán errors
+var validationWithErrors = validationPredicted.map(function(f) {
   var observed = ee.Number(f.get('flood'));
   var predicted = ee.Number(f.get('predicted'));
   var error = observed.subtract(predicted);
@@ -224,42 +229,100 @@ var errors = validationPredicted.map(function(f) {
   });
 });
 
-var rmse = errors.aggregate_mean('squared_error');
-var mae = errors.aggregate_mean('abs_error');
+// Tính RMSE, MAE
+var rmse = ee.Number(validationWithErrors.aggregate_mean('squared_error')).sqrt();
+var mae = validationWithErrors.aggregate_mean('abs_error');
 
-print('RMSE (Root Mean Squared Error):', rmse);
-print('MAE (Mean Absolute Error):', mae);
+// Tính R² (coefficient of determination)
+var meanObserved = validationPredicted.aggregate_mean('flood');
+
+var validationWithSST = validationPredicted.map(function(f) {
+  var observed = ee.Number(f.get('flood'));
+  var predicted = ee.Number(f.get('predicted'));
+  var residual = observed.subtract(predicted);
+  var totalDeviation = observed.subtract(meanObserved);
+  return f.set({
+    'ss_res': residual.pow(2),
+    'ss_tot': totalDeviation.pow(2)
+  });
+});
+
+var ss_res = validationWithSST.aggregate_sum('ss_res');
+var ss_tot = validationWithSST.aggregate_sum('ss_tot');
+var r2 = ee.Number(1).subtract(ee.Number(ss_res).divide(ss_tot));
+
+// Tính Pearson correlation
+var validationList = validationPredicted.reduceColumns({
+  reducer: ee.Reducer.pearsonsCorrelation(),
+  selectors: ['flood', 'predicted']
+});
+
+print('--- Regression Metrics ---');
+print('R² (Coefficient of Determination):', r2);
+print('Pearson Correlation:', validationList.get('correlation'));
+print('RMSE:', rmse);
+print('MAE:', mae);
+print('Mean Observed Value:', meanObserved);
 
 // Feature importance
 var importance = rfRegressor.explain();
-print('Feature Importance:', importance);
+print('\n--- Feature Importance ---');
+print(importance);
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 4: THỰC HIỆN PREDICT TRÊN TOÀN BỘ KHU VỰC
+// BƯỚC 5: PREDICTION
 //////////////////////////////////////////////////////////////
 
-print('========== STEP 4: MAKING PREDICTIONS (REGRESSION) ==========');
+print('\n========== STEP 5: MAKING PREDICTIONS ==========');
 
-// 4.1 Predict flood probability (liên tục 0-1) cho toàn bộ khu vực
+// Predict flood probability (0-1)
 var floodProbability = features.classify(rfRegressor).rename('flood_probability');
-
-// Đảm bảo giá trị trong khoảng [0, 1]
 floodProbability = floodProbability.clamp(0, 1);
 
-// 4.2 Tạo bản đồ phân loại dựa trên ngưỡng (optional)
-var THRESHOLD = 0.5;  // Ngưỡng phân loại: >= 0.5 là flood
-var floodClassification = floodProbability.gte(THRESHOLD).rename('flood_class');
+//////////////////////////////////////////////////////////////
+// BƯỚC 5.5: KIỂM TRA VÀ NỘI SUY NULL TRONG PREDICTION
+//////////////////////////////////////////////////////////////
 
-// 4.3 Tạo bản đồ risk levels
-var riskLevels = floodProbability
-  .where(floodProbability.lt(0.25), 1)  // Low risk
-  .where(floodProbability.gte(0.25).and(floodProbability.lt(0.5)), 2)  // Moderate
-  .where(floodProbability.gte(0.5).and(floodProbability.lt(0.75)), 3)  // High
-  .where(floodProbability.gte(0.75), 4)  // Very High
+print('\n========== STEP 5.5: CHECK & INTERPOLATE NULLS IN PREDICTION ==========');
+
+// Thống kê null TRƯỚC nội suy prediction
+countNullPixels(floodProbability, ['flood_probability'], studyArea, RESOLUTION * 2,
+                'NULL COUNT BEFORE INTERPOLATION (Prediction)');
+
+// Nội suy null values trong prediction
+print('\n🔄 Interpolating null values in prediction...');
+print('  Radius: 90m (3 pixels) | Iterations: 3');
+
+var floodProbabilityInterpolated = interpolateNulls(
+  floodProbability,
+  ['flood_probability'],
+  90,  // radius 90m
+  3    // 3 lần lặp
+);
+
+// Clamp lại sau khi nội suy
+floodProbabilityInterpolated = floodProbabilityInterpolated.clamp(0, 1);
+
+// Thống kê null SAU nội suy prediction
+countNullPixels(floodProbabilityInterpolated, ['flood_probability'], studyArea, RESOLUTION * 2,
+                'NULL COUNT AFTER INTERPOLATION (Prediction)');
+
+print('✅ Prediction interpolation completed');
+
+// Classification với threshold
+var THRESHOLD = 0.5;
+var floodClassification = floodProbabilityInterpolated.gte(THRESHOLD).rename('flood_class');
+
+// Risk levels
+var riskLevels = floodProbabilityInterpolated
+  .where(floodProbabilityInterpolated.lt(0.25), 1)
+  .where(floodProbabilityInterpolated.gte(0.25).and(floodProbabilityInterpolated.lt(0.5)), 2)
+  .where(floodProbabilityInterpolated.gte(0.5).and(floodProbabilityInterpolated.lt(0.75)), 3)
+  .where(floodProbabilityInterpolated.gte(0.75), 4)
   .rename('risk_level');
 
-// 4.4 Reproject kết quả
-floodProbability = floodProbability.reproject({
+// Reproject outputs
+floodProbabilityInterpolated = floodProbabilityInterpolated.reproject({
   crs: 'EPSG:4326',
   scale: RESOLUTION
 }).clip(studyArea);
@@ -275,67 +338,60 @@ riskLevels = riskLevels.reproject({
 }).clip(studyArea);
 
 print('✅ Prediction completed');
-print('Output range check - Min/Max probability:');
-var stats = floodProbability.reduceRegion({
+
+// Kiểm tra range
+var stats = floodProbabilityInterpolated.reduceRegion({
   reducer: ee.Reducer.minMax(),
   geometry: studyArea,
-  scale: RESOLUTION * 10,  // Coarser scale for speed
+  scale: RESOLUTION * 10,
   maxPixels: 1e9
 });
-print('  Min probability:', stats.get('flood_probability_min'));
-print('  Max probability:', stats.get('flood_probability_max'));
+print('Probability range - Min:', stats.get('flood_probability_min'), '| Max:', stats.get('flood_probability_max'));
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 5: HIỂN THỊ KẾT QUẢ
+// BƯỚC 6: VISUALIZATION
 //////////////////////////////////////////////////////////////
 
-print('========== STEP 5: DISPLAYING RESULTS ==========');
+print('\n========== STEP 6: DISPLAYING RESULTS ==========');
 
-// Hiển thị bản đồ
 Map.centerObject(studyArea, 10);
 
-// Hiển thị khu vực nghiên cứu
-Map.addLayer(studyArea, {color: '0000FF'}, 'Study Area Boundary', true, 0.3);
+// Study area
+Map.addLayer(studyArea, {color: '0000FF'}, 'Study Area', true, 0.3);
 
-// Hiển thị imageAsset để kiểm tra coverage
-Map.addLayer(imageAsset.select(0), {min: 0, max: 1000}, 'Image Asset (First Band)', false);
-
-// Hiển thị các điểm training
+// Training points
 var floodPts = floodPoints.filter(ee.Filter.eq('flood', 1));
 var nonFloodPts = floodPoints.filter(ee.Filter.eq('flood', 0));
 Map.addLayer(floodPts, {color: 'FF0000'}, 'Flood Points (1)', true);
 Map.addLayer(nonFloodPts, {color: '00FF00'}, 'Non-Flood Points (0)', true);
 
-// Hiển thị kết quả REGRESSION - Continuous Probability (0-1)
+// Flood probability (continuous) - INTERPOLATED VERSION
 var probPalette = {
   min: 0,
   max: 1,
-  palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']  // Green → Yellow → Orange → Red
+  palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
 };
-Map.addLayer(floodProbability, probPalette, '🎯 Flood Probability (Continuous 0-1)', true);
+Map.addLayer(floodProbabilityInterpolated, probPalette, '🎯 Flood Probability (Interpolated)', true);
 
-// Hiển thị classification với ngưỡng (optional)
+// Classification (binary)
 var classPalette = {
   min: 0,
   max: 1,
   palette: ['green', 'red']
 };
-Map.addLayer(floodClassification, classPalette, 'Flood Classification (Threshold=0.5)', false);
+Map.addLayer(floodClassification, classPalette, 'Classification (Threshold=0.5)', false);
 
-// Hiển thị risk levels
+// Risk levels
 var riskPalette = {
   min: 1,
   max: 4,
   palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
 };
-Map.addLayer(riskLevels, riskPalette, 'Risk Levels (Low/Mod/High/VeryHigh)', false);
+Map.addLayer(riskLevels, riskPalette, 'Risk Levels', false);
 
-// Thêm legend
+// Legend
 var legend = ui.Panel({
-  style: {
-    position: 'bottom-left',
-    padding: '8px 15px'
-  }
+  style: {position: 'bottom-left', padding: '8px 15px'}
 });
 
 var legendTitle = ui.Label({
@@ -346,11 +402,7 @@ legend.add(legendTitle);
 
 var makeRow = function(color, name) {
   var colorBox = ui.Label({
-    style: {
-      backgroundColor: color,
-      padding: '8px',
-      margin: '0 0 4px 0'
-    }
+    style: {backgroundColor: color, padding: '8px', margin: '0 0 4px 0'}
   });
   var description = ui.Label({
     value: name,
@@ -369,61 +421,49 @@ legend.add(makeRow('#FF0000', '0.75 - 1.00: Very High Risk'));
 
 Map.add(legend);
 
-print('✅ Map layers added - Check visualization');
+print('✅ Map layers added');
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 6: EXPORT KẾT QUẢ
+// BƯỚC 7: EXPORT
 //////////////////////////////////////////////////////////////
 
-print('========== STEP 6: EXPORTING RESULTS ==========');
+print('\n========== STEP 7: EXPORTING RESULTS ==========');
 
-// Export flood probability map (CONTINUOUS 0-1)
+// Export probability map (INTERPOLATED)
 Export.image.toDrive({
-  image: floodProbability,
-  description: 'flood_probability_RF_regression',
+  image: floodProbabilityInterpolated,
+  description: 'flood_probability_RF_interpolated',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,
   fileFormat: 'GeoTIFF'
 });
 
-// Export flood classification map (binary with threshold)
+// Export classification map
 Export.image.toDrive({
   image: floodClassification,
-  description: 'flood_classification_RF_threshold',
+  description: 'flood_classification_RF_interpolated',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,
   fileFormat: 'GeoTIFF'
 });
 
-// Export risk levels map
+// Export risk levels
 Export.image.toDrive({
   image: riskLevels,
-  description: 'flood_risk_levels_RF',
+  description: 'flood_risk_levels_RF_interpolated',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,
   fileFormat: 'GeoTIFF'
 });
 
-// Export validation results với predicted values
+// Export validation results
 Export.table.toDrive({
-  collection: validationPredicted.select(['lat', 'lon', 'flood', 'predicted', 'error', 'squared_error', 'abs_error']),
-  description: 'validation_results_RF_regression',
+  collection: validationWithErrors.select(['lat', 'lon', 'flood', 'predicted', 'error', 'squared_error', 'abs_error']),
+  description: 'validation_results_RF_interpolated',
   fileFormat: 'CSV'
 });
 
-print('========== PROCESS COMPLETED ==========');
-print('✅ Check Tasks tab to run exports');
-print('');
-print('📊 REGRESSION OUTPUTS:');
-print('  1. Flood Probability Map (continuous 0-1)');
-print('  2. Flood Classification Map (binary with threshold=0.5)');
-print('  3. Risk Levels Map (4 categories)');
-print('  4. Validation Results CSV (with predicted values)');
-print('');
-print('⚠️ If you see "No valid training data" error:');
-print('  1. Check console logs above for band name mismatches');
-print('  2. Verify points overlap with image data on map');
-print('  3. Ensure imageAsset has valid data (not all NoData)');
+print('\n========== ✅ PROCESS COMPLETED ==========');
