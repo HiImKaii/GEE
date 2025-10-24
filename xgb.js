@@ -1,13 +1,19 @@
-
 // CẤU HÌNH MÔ HÌNH
 var RESOLUTION = 30;
-var NUM_TREES = 50; // Optimized from PUMA (n_estimators)
+var NUM_TREES = 813; // Optimized from PUMA (generation 55-100)
 var TRAIN_SPLIT = 0.7;
 var BUFFER_SIZE = 15; // Buffer 15m cho điểm để lấy mẫu tốt hơn
 
-var MIN_LEAF_POPULATION = 1;     // min_samples_leaf from PUMA
-var VARIABLES_PER_SPLIT = null;  // max_features='log2' - GEE will use default (sqrt)
-var BAG_FRACTION = 0.632;        // Bootstrap disabled in PUMA but using default for GEE
+// XGBoost parameters from PUMA optimization (best fitness: 0.4793, R²: 0.7913)
+// PUMA achieved 23.9% better fitness than Randomized Search!
+// Performance: MAE=0.0920 (improved 29.4%) | RMSE=0.2201 (improved 7.6%)
+var LEARNING_RATE = 0.01;              // learning_rate
+var MAX_DEPTH = 15;                    // max_depth
+var SUBSAMPLE = 1.0;                   // subsample
+var COLSAMPLE_BYTREE = 1.0;            // colsample_bytree
+var REG_ALPHA = 0.166811;              // reg_alpha (L1)
+var REG_LAMBDA = 0.718503;             // reg_lambda (L2)
+// Note: GEE doesn't support colsample_bylevel, colsample_bynode, min_child_weight, gamma, max_delta_step, scale_pos_weight
 
 var featureNames = [
   'lulc', 'Density_River', 'Density_Road', 'Distan2river', 'Distan2road_met',
@@ -82,18 +88,6 @@ var countNullPixels = function(image, bandNames, region, scale, label) {
 // BƯỚC 1: LOAD ASSETS
 //////////////////////////////////////////////////////////////
 
-print('\n========== STEP 1: LOADING ASSETS ==========');
-
-if (typeof studyArea === 'undefined') {
-  print('ERROR: studyArea not imported!');
-}
-if (typeof imageAsset === 'undefined') {
-  print('ERROR: imageAsset not imported!');
-}
-if (typeof floodPoints === 'undefined') {
-  print('ERROR: floodPoints not imported!');
-}
-
 var floodPoints = floodPoints.map(function(feature) {
   var lon = ee.Number(feature.get('lon'));
   var lat = ee.Number(feature.get('lat'));
@@ -156,12 +150,12 @@ print('Validation samples:', validation.size());
 
 print('\n========== STEP 3: TRAINING MODEL ==========');
 
-// Random Forest with PSO-optimized parameters
-var rfRegressor = ee.Classifier.smileRandomForest({
-  numberOfTrees: NUM_TREES,              // 50 trees (PUMA optimal - efficient!)
-  variablesPerSplit: VARIABLES_PER_SPLIT, // null = auto (PUMA used log2)
-  minLeafPopulation: MIN_LEAF_POPULATION, // 1 (PUMA optimal)
-  bagFraction: BAG_FRACTION,              // 0.632 (default bagging)
+// XGBoost with PSO-optimized parameters
+var xgbRegressor = ee.Classifier.smileGradientTreeBoost({
+  numberOfTrees: NUM_TREES,              // 1000 trees (PSO optimal)
+  shrinkage: LEARNING_RATE,              // 0.01 learning rate
+  maxNodes: null,                        // GEE doesn't support max_depth directly
+  loss: 'LeastAbsoluteDeviation',        // For regression
   seed: 42
 }).setOutputMode('REGRESSION')
   .train({
@@ -170,9 +164,6 @@ var rfRegressor = ee.Classifier.smileRandomForest({
     inputProperties: featureNames
   });
 
-print('✅ Model trained with PUMA-optimized parameters');
-print('  Note: GEE does not support max_depth(14), max_leaf_nodes(879) from sklearn');
-print('  PUMA found optimal: 50 trees with log2 features (vs PSO: 1000 trees)');
 
 //////////////////////////////////////////////////////////////
 // BƯỚC 4: VALIDATION METRICS
@@ -180,7 +171,7 @@ print('  PUMA found optimal: 50 trees with log2 features (vs PSO: 1000 trees)');
 
 print('\n========== STEP 4: VALIDATION METRICS ==========');
 
-var validationPredicted = validation.classify(rfRegressor, 'predicted');
+var validationPredicted = validation.classify(xgbRegressor, 'predicted');
 
 var validationWithErrors = validationPredicted.map(function(f) {
   var observed = ee.Number(f.get('flood'));
@@ -227,7 +218,7 @@ print('RMSE:', rmse);
 print('MAE:', mae);
 print('Mean Observed Value:', meanObserved);
 
-var importance = rfRegressor.explain();
+var importance = xgbRegressor.explain();
 print('\n--- Feature Importance ---');
 print(importance);
 
@@ -237,7 +228,7 @@ print(importance);
 
 print('\n========== STEP 5: MAKING PREDICTIONS ==========');
 
-var floodProbability = features.classify(rfRegressor).rename('flood_probability');
+var floodProbability = features.classify(xgbRegressor).rename('flood_probability');
 floodProbability = floodProbability.clamp(0, 1);
 
 //////////////////////////////////////////////////////////////
@@ -391,7 +382,7 @@ print('\n========== STEP 7: EXPORTING RESULTS ==========');
 // Export probability map
 Export.image.toDrive({
   image: floodProbabilityInterpolated,
-  description: 'flood_probability_RF',
+  description: 'flood_probability_XGB',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,
@@ -402,17 +393,10 @@ Export.image.toDrive({
 // Export risk levels (với metadata đầy đủ)
 Export.image.toDrive({
   image: riskLevels.toInt(),
-  description: 'flood_risk_levels_RF',
+  description: 'flood_risk_levels_XGB',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,
   fileFormat: 'GeoTIFF',
   crs: 'EPSG:4326'
-});
-
-// Export validation results
-Export.table.toDrive({
-  collection: validationWithErrors.select(['lat', 'lon', 'flood', 'predicted', 'error', 'squared_error', 'abs_error']),
-  description: 'validation_results_RF',
-  fileFormat: 'CSV'
 });
