@@ -3,11 +3,11 @@ var RESOLUTION = 30;
 var TRAIN_SPLIT = 0.7;
 var BUFFER_SIZE = 15;
 
-// SVR Parameters - OPTIMIZED FOR HIGH ACCURACY (Target R²: 0.9)
-var SVM_KERNEL = 'RBF';       // RBF kernel - best for complex patterns
-var SVM_C = 150.0;            // High cost - allow more flexibility to fit data
-var SVM_GAMMA = 0.15;         // Higher gamma - capture more complex patterns
-var SVM_EPSILON = 0.01;       // Lower epsilon - stricter fitting
+// SVR Parameters - RANDOM SET #2
+var SVM_KERNEL = 'RBF';       // RBF kernel 
+var SVM_C = 75.5;             // Cost parameter
+var SVM_GAMMA = 0.0321;       // Gamma for RBF kernel
+var SVM_EPSILON = 0.08;       // Epsilon for SVR
 
 var featureNames = [
   'lulc', 'Density_River', 'Density_Road', 'Distan2river', 'Distan2road_met',
@@ -174,13 +174,13 @@ print('  - Flood (1):', validation.filter(ee.Filter.eq('flood', 1)).size());
 print('  - Non-flood (0):', validation.filter(ee.Filter.eq('flood', 0)).size());
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 3: TRAINING ENSEMBLE SVR MODELS
+// BƯỚC 3: TRAINING SVR MODEL
 //////////////////////////////////////////////////////////////
 
-print('\n========== STEP 3: TRAINING ENSEMBLE SVR MODELS ==========');
+print('\n========== STEP 3: TRAINING SVR MODEL ==========');
 
-// Model 1: RBF kernel với tham số cao để fit tốt hơn
-var svr1 = ee.Classifier.libsvm({
+// Single SVR model
+var svrModel = ee.Classifier.libsvm({
   svmType: 'EPSILON_SVR',
   kernelType: SVM_KERNEL,
   gamma: SVM_GAMMA,
@@ -192,56 +192,24 @@ var svr1 = ee.Classifier.libsvm({
     inputProperties: standardizedFeatureNames
   });
 
-// Model 2: RBF kernel với gamma cao hơn (phụ trợ)
-var svr2 = ee.Classifier.libsvm({
-  svmType: 'EPSILON_SVR',
-  kernelType: 'RBF',
-  gamma: 0.2,
-  cost: 120.0
-}).setOutputMode('REGRESSION')
-  .train({
-    features: training,
-    classProperty: 'flood',
-    inputProperties: standardizedFeatureNames
-  });
-
-// Model 3: Polynomial kernel cao cấp (phụ trợ)
-var svr3 = ee.Classifier.libsvm({
-  svmType: 'EPSILON_SVR',
-  kernelType: 'POLY',
-  gamma: 0.1,
-  cost: 100.0,
-  degree: 4
-}).setOutputMode('REGRESSION')
-  .train({
-    features: training,
-    classProperty: 'flood',
-    inputProperties: standardizedFeatureNames
-  });
-
-print('✅ Trained 3 SVR models for ensemble');
+print('✅ SVR model trained successfully');
+print('  - Kernel:', SVM_KERNEL);
+print('  - C:', SVM_C);
+print('  - Gamma:', SVM_GAMMA);
+print('  - Epsilon:', SVM_EPSILON);
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 4: ENSEMBLE VALIDATION
+// BƯỚC 4: MODEL VALIDATION
 //////////////////////////////////////////////////////////////
 
-print('\n========== STEP 4: ENSEMBLE VALIDATION ==========');
+print('\n========== STEP 4: MODEL VALIDATION ==========');
 
-var val1 = validation.classify(svr1, 'pred1');
-var val2 = val1.classify(svr2, 'pred2');
-var val3 = val2.classify(svr3, 'pred3');
+var validationPredicted = validation.classify(svrModel, 'predicted');
 
-// Ensemble: Trung bình có trọng số
-var validationEnsemble = val3.map(function(f) {
-  var p1 = ee.Number(f.get('pred1'));
-  var p2 = ee.Number(f.get('pred2'));
-  var p3 = ee.Number(f.get('pred3'));
-  
-  // Weighted average - tăng trọng số cho model chính
-  var predicted = p1.multiply(0.5).add(p2.multiply(0.3)).add(p3.multiply(0.2));
-  predicted = predicted.clamp(0, 1);
-  
+// Tính toán metrics
+var validationWithMetrics = validationPredicted.map(function(f) {
   var observed = ee.Number(f.get('flood'));
+  var predicted = ee.Number(f.get('predicted')).clamp(0, 1);
   var error = observed.subtract(predicted);
   var squaredError = error.pow(2);
   var absError = error.abs();
@@ -254,12 +222,12 @@ var validationEnsemble = val3.map(function(f) {
   });
 });
 
-var rmse = ee.Number(validationEnsemble.aggregate_mean('squared_error')).sqrt();
-var mae = validationEnsemble.aggregate_mean('abs_error');
+var rmse = ee.Number(validationWithMetrics.aggregate_mean('squared_error')).sqrt();
+var mae = validationWithMetrics.aggregate_mean('abs_error');
 
-var meanObserved = validationEnsemble.aggregate_mean('flood');
+var meanObserved = validationWithMetrics.aggregate_mean('flood');
 
-var validationWithSST = validationEnsemble.map(function(f) {
+var validationWithSST = validationWithMetrics.map(function(f) {
   var observed = ee.Number(f.get('flood'));
   var predicted = ee.Number(f.get('predicted'));
   var residual = observed.subtract(predicted);
@@ -274,12 +242,12 @@ var ss_res = validationWithSST.aggregate_sum('ss_res');
 var ss_tot = validationWithSST.aggregate_sum('ss_tot');
 var r2 = ee.Number(1).subtract(ee.Number(ss_res).divide(ss_tot));
 
-var validationList = validationEnsemble.reduceColumns({
+var validationList = validationWithMetrics.reduceColumns({
   reducer: ee.Reducer.pearsonsCorrelation(),
   selectors: ['flood', 'predicted']
 });
 
-print('--- ENSEMBLE Regression Metrics ---');
+print('--- SVR Regression Metrics ---');
 print('R² (Coefficient of Determination):', r2);
 print('Pearson Correlation:', validationList.get('correlation'));
 print('RMSE:', rmse);
@@ -287,10 +255,10 @@ print('MAE:', mae);
 print('Mean Observed Value:', meanObserved);
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 5: PREDICTION VỚI ENSEMBLE
+// BƯỚC 5: PREDICTION VỚI SINGLE MODEL
 //////////////////////////////////////////////////////////////
 
-print('\n========== STEP 5: MAKING ENSEMBLE PREDICTIONS ==========');
+print('\n========== STEP 5: MAKING PREDICTIONS ==========');
 
 // Standardize features cho prediction
 var featuresStd = features;
@@ -312,15 +280,9 @@ featureNames.forEach(function(feature) {
 
 print('✅ Features standardized for prediction');
 
-// Predict với 3 models
-var pred1 = featuresStd.select(standardizedFeatureNames).classify(svr1).rename('pred1');
-var pred2 = featuresStd.select(standardizedFeatureNames).classify(svr2).rename('pred2');
-var pred3 = featuresStd.select(standardizedFeatureNames).classify(svr3).rename('pred3');
-
-// Ensemble prediction
-var floodProbability = pred1.multiply(0.4)
-  .add(pred2.multiply(0.3))
-  .add(pred3.multiply(0.3))
+// Single model prediction
+var floodProbability = featuresStd.select(standardizedFeatureNames)
+  .classify(svrModel)
   .clamp(0, 1)
   .rename('flood_probability');
 
@@ -389,7 +351,7 @@ var probPalette = {
   max: 1,
   palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
 };
-Map.addLayer(floodProbabilityInterpolated, probPalette, '🎯 Flood Probability (Ensemble SVR)', true);
+Map.addLayer(floodProbabilityInterpolated, probPalette, '🎯 Flood Probability (SVR)', true);
 
 var riskPalette = {
   min: 1,
@@ -404,7 +366,7 @@ var legend = ui.Panel({
 });
 
 var legendTitle = ui.Label({
-  value: 'Flood Risk Levels (Ensemble SVR)',
+  value: 'Flood Risk Levels (SVR)',
   style: {fontWeight: 'bold', fontSize: '16px', margin: '0 0 4px 0'}
 });
 legend.add(legendTitle);
@@ -436,7 +398,7 @@ print('\n========== STEP 7: EXPORTING RESULTS ==========');
 
 Export.image.toDrive({
   image: floodProbabilityInterpolated,
-  description: 'flood_probability_Ensemble_SVR',
+  description: 'flood_probability_SVR',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,
@@ -446,7 +408,7 @@ Export.image.toDrive({
 
 Export.image.toDrive({
   image: riskLevels.toInt(),
-  description: 'flood_risk_levels_Ensemble_SVR',
+  description: 'flood_risk_levels_SVR',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,

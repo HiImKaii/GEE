@@ -1,13 +1,13 @@
 
 // CẤU HÌNH MÔ HÌNH
 var RESOLUTION = 30;
-var NUM_TREES = 50; // Optimized from PUMA (n_estimators)
+var NUM_TREES = 215; // Optimized from Randomized Search (iteration 23, R²=0.7325)
 var TRAIN_SPLIT = 0.7;
 var BUFFER_SIZE = 15; // Buffer 15m cho điểm để lấy mẫu tốt hơn
 
-var MIN_LEAF_POPULATION = 1;     // min_samples_leaf from PUMA
-var VARIABLES_PER_SPLIT = null;  // max_features='log2' - GEE will use default (sqrt)
-var BAG_FRACTION = 0.632;        // Bootstrap disabled in PUMA but using default for GEE
+var MIN_LEAF_POPULATION = 1;     // min_samples_leaf from best model (iteration 23)
+var VARIABLES_PER_SPLIT = 6;     // max_features=0.5 → ~6 features (0.5 * 13 features)
+var BAG_FRACTION = 0.5;          // Bootstrap=False in best model, reduced bagging
 
 var featureNames = [
   'lulc', 'Density_River', 'Density_Road', 'Distan2river', 'Distan2road_met',
@@ -156,12 +156,12 @@ print('Validation samples:', validation.size());
 
 print('\n========== STEP 3: TRAINING MODEL ==========');
 
-// Random Forest with PSO-optimized parameters
+// Random Forest with Randomized Search optimized parameters (iteration 23)
 var rfRegressor = ee.Classifier.smileRandomForest({
-  numberOfTrees: NUM_TREES,              // 50 trees (PUMA optimal - efficient!)
-  variablesPerSplit: VARIABLES_PER_SPLIT, // null = auto (PUMA used log2)
-  minLeafPopulation: MIN_LEAF_POPULATION, // 1 (PUMA optimal)
-  bagFraction: BAG_FRACTION,              // 0.632 (default bagging)
+  numberOfTrees: NUM_TREES,              // 215 trees (best from randomized search)
+  variablesPerSplit: VARIABLES_PER_SPLIT, // 6 features (max_features=0.5)
+  minLeafPopulation: MIN_LEAF_POPULATION, // 1 (optimal value)
+  bagFraction: BAG_FRACTION,              // 0.5 (bootstrap disabled in best model)
   seed: 42
 }).setOutputMode('REGRESSION')
   .train({
@@ -170,9 +170,11 @@ var rfRegressor = ee.Classifier.smileRandomForest({
     inputProperties: featureNames
   });
 
-print('✅ Model trained with PUMA-optimized parameters');
-print('  Note: GEE does not support max_depth(14), max_leaf_nodes(879) from sklearn');
-print('  PUMA found optimal: 50 trees with log2 features (vs PSO: 1000 trees)');
+print('✅ Model trained with Randomized Search optimized parameters');
+print('  Best iteration 23: R²=0.7325, Fitness=0.3448');
+print('  Parameters: 215 trees, 6 features/split, min_leaf=1, bag_fraction=0.5');
+print('  Note: GEE does not support max_depth(37), max_leaf_nodes(510), min_samples_split(18)');
+
 
 //////////////////////////////////////////////////////////////
 // BƯỚC 4: VALIDATION METRICS
