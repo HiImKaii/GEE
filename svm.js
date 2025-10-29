@@ -3,11 +3,11 @@ var RESOLUTION = 30;
 var TRAIN_SPLIT = 0.7;
 var BUFFER_SIZE = 15;
 
-// SVR Parameters - OPTIMIZED FROM PSO (Best R²: 0.5923)
-var SVM_KERNEL = 'POLY';      // Polynomial kernel performs best
-var SVM_C = 1.193;            // Optimized cost parameter
-var SVM_GAMMA = 0.0787;       // Optimized gamma for polynomial kernel
-var SVM_EPSILON = 0.05;       // Epsilon for SVR
+// SVR Parameters - OPTIMIZED FOR HIGH ACCURACY (Target R²: 0.9)
+var SVM_KERNEL = 'RBF';       // RBF kernel - best for complex patterns
+var SVM_C = 150.0;            // High cost - allow more flexibility to fit data
+var SVM_GAMMA = 0.15;         // Higher gamma - capture more complex patterns
+var SVM_EPSILON = 0.01;       // Lower epsilon - stricter fitting
 
 var featureNames = [
   'lulc', 'Density_River', 'Density_Road', 'Distan2river', 'Distan2road_met',
@@ -179,13 +179,12 @@ print('  - Non-flood (0):', validation.filter(ee.Filter.eq('flood', 0)).size());
 
 print('\n========== STEP 3: TRAINING ENSEMBLE SVR MODELS ==========');
 
-// Model 1: Polynomial kernel với tham số tối ưu từ PSO
+// Model 1: RBF kernel với tham số cao để fit tốt hơn
 var svr1 = ee.Classifier.libsvm({
   svmType: 'EPSILON_SVR',
-  kernelType: 'POLY',
+  kernelType: SVM_KERNEL,
   gamma: SVM_GAMMA,
-  cost: SVM_C,
-  degree: 4
+  cost: SVM_C
 }).setOutputMode('REGRESSION')
   .train({
     features: training,
@@ -193,12 +192,12 @@ var svr1 = ee.Classifier.libsvm({
     inputProperties: standardizedFeatureNames
   });
 
-// Model 2: RBF kernel (phụ trợ)
+// Model 2: RBF kernel với gamma cao hơn (phụ trợ)
 var svr2 = ee.Classifier.libsvm({
   svmType: 'EPSILON_SVR',
   kernelType: 'RBF',
-  gamma: 0.05,
-  cost: 50
+  gamma: 0.2,
+  cost: 120.0
 }).setOutputMode('REGRESSION')
   .train({
     features: training,
@@ -206,13 +205,13 @@ var svr2 = ee.Classifier.libsvm({
     inputProperties: standardizedFeatureNames
   });
 
-// Model 3: Polynomial kernel (phụ trợ)
+// Model 3: Polynomial kernel cao cấp (phụ trợ)
 var svr3 = ee.Classifier.libsvm({
   svmType: 'EPSILON_SVR',
   kernelType: 'POLY',
-  gamma: 0.05,
-  cost: 50,
-  degree: 3
+  gamma: 0.1,
+  cost: 100.0,
+  degree: 4
 }).setOutputMode('REGRESSION')
   .train({
     features: training,
@@ -238,8 +237,8 @@ var validationEnsemble = val3.map(function(f) {
   var p2 = ee.Number(f.get('pred2'));
   var p3 = ee.Number(f.get('pred3'));
   
-  // Weighted average (có thể điều chỉnh weights)
-  var predicted = p1.multiply(0.4).add(p2.multiply(0.3)).add(p3.multiply(0.3));
+  // Weighted average - tăng trọng số cho model chính
+  var predicted = p1.multiply(0.5).add(p2.multiply(0.3)).add(p3.multiply(0.2));
   predicted = predicted.clamp(0, 1);
   
   var observed = ee.Number(f.get('flood'));
