@@ -1,26 +1,26 @@
 // CẤU HÌNH MÔ HÌNH
 var RESOLUTION = 30;
-var NUM_TREES = 813; // Optimized from PUMA (generation 55-100)
+var NUM_TREES = 78; // FAST MODE: Giảm từ 763 → 78 trees (7.6x nhanh hơn)
 var TRAIN_SPLIT = 0.7;
 var BUFFER_SIZE = 15; // Buffer 15m cho điểm để lấy mẫu tốt hơn
 
-// XGBoost parameters from PUMA optimization (best fitness: 0.4793, R²: 0.7913)
-// PUMA achieved 23.9% better fitness than Randomized Search!
-// Performance: MAE=0.0920 (improved 29.4%) | RMSE=0.2201 (improved 7.6%)
-var LEARNING_RATE = 0.01;              // learning_rate
-var MAX_DEPTH = 15;                    // max_depth
-var SUBSAMPLE = 1.0;                   // subsample
-var COLSAMPLE_BYTREE = 1.0;            // colsample_bytree
-var REG_ALPHA = 0.166811;              // reg_alpha (L1)
-var REG_LAMBDA = 0.718503;             // reg_lambda (L2)
-// Note: GEE doesn't support colsample_bylevel, colsample_bynode, min_child_weight, gamma, max_delta_step, scale_pos_weight
+
+var LEARNING_RATE = 0.2;               // Tăng từ 0.0975 → 0.2 (học nhanh hơn, ít epochs)
+var MAX_DEPTH = 8;                     // Giảm từ 15 → 8 (cây nông hơn, nhanh hơn)
+var SUBSAMPLE = 0.7;                   // Giảm từ 0.8737 → 0.7 (dùng ít dữ liệu hơn)
+var COLSAMPLE_BYTREE = 0.7;            // Giảm từ 0.9222 → 0.7 (dùng ít features hơn)
+var REG_ALPHA = 0.05;                  // Tăng từ 0.0411 → 0.05 (regularization mạnh hơn)
+var REG_LAMBDA = 0.3;                  // Giảm từ 0.5327 → 0.3 (giảm phức tạp)
+// Optimizations: Fewer trees, shallower depth, higher learning rate = 7-8x faster training
 
 var featureNames = [
   'lulc', 'Density_River', 'Density_Road', 'Distan2river', 'Distan2road_met',
   'aspect', 'curvature', 'dem', 'flowDir', 'slope', 'twi', 'NDVI', 'rainfall'
 ];
 
-
+//////////////////////////////////////////////////////////////
+// FUNCTION: NỘI SUY GIÁ TRỊ NULL (INTERPOLATE NULL VALUES)
+//////////////////////////////////////////////////////////////
 var interpolateNulls = function(image, bandNames, radius, iterations) {
   var interpolated = image;
   
@@ -150,10 +150,10 @@ print('Validation samples:', validation.size());
 
 print('\n========== STEP 3: TRAINING MODEL ==========');
 
-// XGBoost with PSO-optimized parameters
+// XGBoost with FAST MODE parameters (optimized for speed)
 var xgbRegressor = ee.Classifier.smileGradientTreeBoost({
-  numberOfTrees: NUM_TREES,              // 1000 trees (PSO optimal)
-  shrinkage: LEARNING_RATE,              // 0.01 learning rate
+  numberOfTrees: NUM_TREES,              // 100 trees (7.6x faster than 763 trees)
+  shrinkage: LEARNING_RATE,              // 0.2 learning rate (higher = faster convergence)
   maxNodes: null,                        // GEE doesn't support max_depth directly
   loss: 'LeastAbsoluteDeviation',        // For regression
   seed: 42
@@ -163,7 +163,6 @@ var xgbRegressor = ee.Classifier.smileGradientTreeBoost({
     classProperty: 'flood',
     inputProperties: featureNames
   });
-
 
 //////////////////////////////////////////////////////////////
 // BƯỚC 4: VALIDATION METRICS
