@@ -14,70 +14,6 @@ var featureNames = [
   'aspect', 'curvature', 'dem', 'flowDir', 'slope', 'twi', 'NDVI', 'rainfall'
 ];
 
-
-var interpolateNulls = function(image, bandNames, radius, iterations) {
-  var interpolated = image;
-  
-  for (var i = 0; i < iterations; i++) {
-    var newBands = bandNames.map(function(bandName) {
-      var band = interpolated.select([bandName]);
-      var validMask = band.mask();
-      var filled = band.focal_mean({
-        radius: radius,
-        units: 'meters',
-        kernelType: 'square'
-      });
-      var result = band.unmask(filled);
-      return result.rename(bandName);
-    });
-    
-    interpolated = ee.Image(newBands);
-  }
-  
-  return interpolated;
-};
-
-//////////////////////////////////////////////////////////////
-// FUNCTION: THỐNG KÊ NULL VALUES
-//////////////////////////////////////////////////////////////
-
-var countNullPixels = function(image, bandNames, region, scale, label) {
-  print('\n--- ' + label + ' ---');
-  
-  var stats = ee.List(bandNames).map(function(bandName) {
-    var band = image.select([bandName]);
-    
-    var totalPixels = band.unmask(-9999).reduceRegion({
-      reducer: ee.Reducer.count(),
-      geometry: region,
-      scale: scale,
-      maxPixels: 1e9
-    });
-    
-    var validPixels = band.reduceRegion({
-      reducer: ee.Reducer.count(),
-      geometry: region,
-      scale: scale,
-      maxPixels: 1e9
-    });
-    
-    var total = ee.Number(totalPixels.get(bandName));
-    var valid = ee.Number(validPixels.get(bandName));
-    var nullCount = total.subtract(valid);
-    var nullPercent = nullCount.divide(total).multiply(100);
-    
-    return ee.Dictionary({
-      'band': bandName,
-      'total': total,
-      'valid': valid,
-      'null': nullCount,
-      'null_percent': nullPercent
-    });
-  });
-  
-  print(stats);
-};
-
 //////////////////////////////////////////////////////////////
 // BƯỚC 1: LOAD ASSETS
 //////////////////////////////////////////////////////////////
@@ -115,17 +51,27 @@ print('\n========== STEP 2: EXTRACTING FEATURES ==========');
 
 var features = imageAsset.select(featureNames).clip(studyArea);
 
-var floodPointsBuffered = floodPoints.map(function(feature) {
-  var buffered = feature.buffer(BUFFER_SIZE);
-  return buffered.copyProperties(feature, ['flood', 'lat', 'lon']);
-});
+// ===== TẠO THÊM ĐIỂM (BUFFER) - COMMENTED OUT =====
+// var floodPointsBuffered = floodPoints.map(function(feature) {
+//   var buffered = feature.buffer(BUFFER_SIZE);
+//   return buffered.copyProperties(feature, ['flood', 'lat', 'lon']);
+// });
+// print('✅ Applied ' + BUFFER_SIZE + 'm buffer to points');
+// 
+// var trainingData = features.sampleRegions({
+//   collection: floodPointsBuffered,
+//   properties: ['flood', 'lat', 'lon'],
+//   scale: 10,
+//   tileScale: 1,
+//   geometries: false
+// });
+// ===== END BUFFER SECTION =====
 
-print('✅ Applied ' + BUFFER_SIZE + 'm buffer to points');
-
+// Sử dụng trực tiếp điểm gốc không buffer
 var trainingData = features.sampleRegions({
-  collection: floodPointsBuffered,
+  collection: floodPoints,
   properties: ['flood', 'lat', 'lon'],
-  scale: 10,
+  scale: RESOLUTION,
   tileScale: 1,
   geometries: false
 });
@@ -244,49 +190,23 @@ var floodProbability = features.classify(rfRegressor).rename('flood_probability'
 floodProbability = floodProbability.clamp(0, 1);
 
 //////////////////////////////////////////////////////////////
-// BƯỚC 5.5: KIỂM TRA VÀ NỘI SUY NULL TRONG PREDICTION
-//////////////////////////////////////////////////////////////
-
-print('\n========== STEP 5.5: CHECK & INTERPOLATE NULLS IN PREDICTION ==========');
-
-countNullPixels(floodProbability, ['flood_probability'], studyArea, RESOLUTION * 2,
-                'NULL COUNT BEFORE INTERPOLATION (Prediction)');
-
-print('\n🔄 Interpolating null values in prediction...');
-print('  Radius: 90m (3 pixels) | Iterations: 3');
-
-var floodProbabilityInterpolated = interpolateNulls(
-  floodProbability,
-  ['flood_probability'],
-  90,
-  3
-);
-
-floodProbabilityInterpolated = floodProbabilityInterpolated.clamp(0, 1);
-
-countNullPixels(floodProbabilityInterpolated, ['flood_probability'], studyArea, RESOLUTION * 2,
-                'NULL COUNT AFTER INTERPOLATION (Prediction)');
-
-print('✅ Prediction interpolation completed');
-
-//////////////////////////////////////////////////////////////
-// TÍNH RISK LEVELS (FIXED ALGORITHM)
+// TÍNH RISK LEVELS
 //////////////////////////////////////////////////////////////
 
 print('\n========== CALCULATING RISK LEVELS ==========');
 
-// THUẬT TOÁN MỚI: Dùng expression để phân loại rõ ràng
-var riskLevels = floodProbabilityInterpolated.expression(
+// THUẬT TOÁN: Dùng expression để phân loại rõ ràng
+var riskLevels = floodProbability.expression(
   '(b1 < 0.25) ? 1 : ' +  // Low Risk
   '(b1 < 0.50) ? 2 : ' +  // Moderate Risk
   '(b1 < 0.75) ? 3 : 4',  // High Risk : Very High Risk
   {
-    'b1': floodProbabilityInterpolated.select('flood_probability')
+    'b1': floodProbability.select('flood_probability')
   }
 ).rename('risk_level').toInt();
 
 // Reproject outputs
-floodProbabilityInterpolated = floodProbabilityInterpolated.reproject({
+floodProbability = floodProbability.reproject({
   crs: 'EPSG:4326',
   scale: RESOLUTION
 }).clip(studyArea);
@@ -309,7 +229,7 @@ print('\n--- Risk Level Distribution ---');
 print('Histogram:', riskStats.get('risk_level'));
 
 // Kiểm tra range probability
-var probStats = floodProbabilityInterpolated.reduceRegion({
+var probStats = floodProbability.reduceRegion({
   reducer: ee.Reducer.minMax(),
   geometry: studyArea,
   scale: RESOLUTION * 10,
@@ -341,7 +261,7 @@ var probPalette = {
   max: 1,
   palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
 };
-Map.addLayer(floodProbabilityInterpolated, probPalette, '🎯 Flood Probability', true);
+Map.addLayer(floodProbability, probPalette, '🎯 Flood Probability', true);
 
 // Risk levels (categorical)
 var riskPalette = {
@@ -393,7 +313,7 @@ print('\n========== STEP 7: EXPORTING RESULTS ==========');
 
 // Export probability map
 Export.image.toDrive({
-  image: floodProbabilityInterpolated,
+  image: floodProbability,
   description: 'flood_probability_RF',
   scale: RESOLUTION,
   region: studyArea,

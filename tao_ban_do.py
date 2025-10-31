@@ -103,6 +103,22 @@ def get_colormap_for_feature(feature_name):
         cmap = LinearSegmentedColormap.from_list('ndvi', colors)
         cmap.set_bad(color='lightgray', alpha=0.3)
         return cmap, label, False  # False = dữ liệu liên tục
+    elif feature_name == 'twi':
+        # Màu sắc cho TWI - màu xanh dương với các bậc màu rõ rệt
+        # TWI cao = vùng ẩm ướt, tích nước; TWI thấp = vùng khô, thoát nước tốt
+        colors = ['#E3F2FD', '#BBDEFB', '#90CAF9', '#64B5F6', '#42A5F5', '#2196F3', '#1E88E5', '#1976D2', '#1565C0']
+        label = 'Chỉ số độ ẩm địa hình (TWI)'
+        cmap = LinearSegmentedColormap.from_list('twi', colors)
+        cmap.set_bad(color='lightgray', alpha=0.3)
+        return cmap, label, False  # False = dữ liệu liên tục
+    elif feature_name == 'curvature':
+        # Màu sắc cho Curvature - từ lõm (âm) đến lồi (dương)
+        # Âm (lõm/concave) = màu xanh dương, 0 (phẳng) = trắng/vàng nhạt, Dương (lồi/convex) = đỏ/cam
+        colors = ['#0D47A1', '#1976D2', '#42A5F5', '#90CAF9', '#E1F5FE', '#FFF9C4', '#FFEB3B', '#FFA726', '#FF6F00']
+        label = 'Độ cong địa hình (Curvature)'
+        cmap = LinearSegmentedColormap.from_list('curvature', colors)
+        cmap.set_bad(color='lightgray', alpha=0.3)
+        return cmap, label, False  # False = dữ liệu liên tục
     else:
         colors = ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
         label = f'Giá trị {feature_name}'
@@ -111,14 +127,14 @@ def get_colormap_for_feature(feature_name):
         return cmap, label, False  # False = dữ liệu liên tục
 
 # ===== XỬ LÝ FILE CỤ THỂ =====
-input_file = r"D:\Vscode\gee\ESA_WorldCover_30m_2021.tif"
+input_file = r"D:\prj\feature\gialai_curvature.tif"
 output_folder = r"D:\prj\map"
 
 # Tạo thư mục output nếu chưa có
 os.makedirs(output_folder, exist_ok=True)
 
 # Đặt tên file output phù hợp với ý nghĩa
-output_filename = "ban_do_esa_worldcover_2021.png"
+output_filename = "ban_do_gialai_curvature.png"
 output_file = os.path.join(output_folder, output_filename)
 
 print(f"Đang xử lý file: {input_file}")
@@ -126,36 +142,25 @@ print(f"Kết quả sẽ lưu tại: {output_file}\n")
 
 # ===== XỬ LÝ FILE =====
 print(f"\n{'='*60}")
-print(f"ĐANG XỬ LÝ: ESA WorldCover 2021 (Sử dụng đất/Lớp phủ đất 30m)")
+print(f"ĐANG XỬ LÝ: Curvature - Độ cong địa hình")
 print(f"{'='*60}")  
 
 try:
     print("Đọc file TIFF...")
     data, extent_original, extent_wgs84, src_crs, nodata_value = read_tiff(input_file)
     
-    # Dữ liệu ESA WorldCover có các lớp: 10, 20, 30, 40, 50, 60, 80, 90, 95
-    # Ánh xạ sang 1-9 để dễ hiển thị với colormap
-    print(f"  - Ánh xạ các lớp ESA WorldCover...")
-    print(f"    + 10=Tree cover, 20=Shrubland, 30=Grassland, 40=Cropland")
-    print(f"    + 50=Built-up, 60=Bare, 80=Water, 90=Wetland, 95=Mangroves")
+    # Curvature là dữ liệu liên tục (continuous), không cần ánh xạ
+    print(f"  - Curvature là độ cong địa hình liên tục")
+    print(f"    + Giá trị dương (+): Bề mặt lồi (convex), thoát nước tốt")
+    print(f"    + Giá trị âm (-): Bề mặt lõm (concave), tích nước")
+    print(f"    + Giá trị gần 0: Bề mặt phẳng")
     
-    data_remapped = np.zeros_like(data, dtype=np.float32)
-    
-    # Ánh xạ ESA WorldCover (10,20,30...) -> 1,2,3...
-    data_remapped[data == 10] = 1  # Tree cover
-    data_remapped[data == 20] = 2  # Shrubland
-    data_remapped[data == 30] = 3  # Grassland
-    data_remapped[data == 40] = 4  # Cropland
-    data_remapped[data == 50] = 5  # Built-up
-    data_remapped[data == 60] = 6  # Bare/sparse vegetation
-    data_remapped[data == 80] = 7  # Permanent water bodies
-    data_remapped[data == 90] = 8  # Herbaceous wetland
-    data_remapped[data == 95] = 9  # Mangroves
-    
-    # Mask NoData
-    mask_condition = (data == nodata_value) if nodata_value is not None else (data == 255)
-    print(f"  - Masking NoData value: {nodata_value}")
-    data_masked = np.ma.masked_where(mask_condition, data_remapped)
+    # Mask NoData và NaN
+    mask_condition = np.isnan(data)
+    if nodata_value is not None:
+        mask_condition = mask_condition | (data == nodata_value)
+    print(f"  - Masking NaN và NoData values")
+    data_masked = np.ma.masked_where(mask_condition, data)
 
     # Kiểm tra kiểu dữ liệu
     valid_data = data_masked.compressed()  # Lấy dữ liệu không bị mask
@@ -178,8 +183,8 @@ try:
     # Vẽ bản đồ với colormap phù hợp
     print("Vẽ bản đồ...")
     
-    # Sử dụng colormap cho ESA WorldCover
-    cmap_feature, labels_info, is_categorical = get_colormap_for_feature('esa_worldcover')
+    # Sử dụng colormap cho Curvature
+    cmap_feature, labels_info, is_categorical = get_colormap_for_feature('curvature')
 
     # Kiểm tra kích thước ảnh để quyết định có thêm basemap không
     total_pixels = data.shape[0] * data.shape[1]
@@ -238,34 +243,88 @@ try:
         cbar.set_ticks(valid_classes)
         cbar.ax.set_yticklabels([labels_info[esa_map[int(i)]] for i in valid_classes], fontsize=9)
     else:
-        # Dữ liệu liên tục
+        # Dữ liệu liên tục - Curvature
         if len(valid_data) > 0:
             valid_min = valid_data.min()
             valid_max = valid_data.max()
             
-            if valid_max - valid_min < 0.01:
-                print(f"⚠ Phạm vi giá trị quá nhỏ ({valid_max - valid_min}), đang chuẩn hóa...")
-                data_masked = (data_masked - valid_min) / (valid_max - valid_min + 1e-10)
-                valid_min = 0
-                valid_max = 1
-            else:
-                p2 = np.percentile(valid_data, 2)
-                p98 = np.percentile(valid_data, 98)
-                print(f"  - Sử dụng percentile: {p2:.4f} (2%) to {p98:.4f} (98%)")
-                valid_min = p2
-                valid_max = p98
+            # Curvature có giá trị âm và dương
+            # Sử dụng P5-P95 để giữ dải giá trị rộng (bao gồm cả giá trị 20-30)
+            p5 = np.percentile(valid_data, 5)
+            p95 = np.percentile(valid_data, 95)
+            p25 = np.percentile(valid_data, 25)
+            p75 = np.percentile(valid_data, 75)
+            median_val = np.median(valid_data)
+            
+            print(f"  - Dải giá trị thực tế: {valid_min:.2f} to {valid_max:.2f}")
+            print(f"  - Median: {median_val:.2f}, Mean: {valid_data.mean():.2f}")
+            print(f"  - P5: {p5:.2f}, P25: {p25:.2f}, P75: {p75:.2f}, P95: {p95:.2f}")
+            
+            # Giữ dải giá trị rộng để bao gồm cả vùng biên (20-30)
+            # Làm đối xứng quanh 0
+            abs_max = max(abs(p5), abs(p95))
+            vmin_plot = -abs_max
+            vmax_plot = abs_max
+            print(f"  - Sử dụng dải đối xứng quanh 0 (P5-P95): {vmin_plot:.2f} to {vmax_plot:.2f}")
         else:
-            valid_min = data_masked.min()
-            valid_max = data_masked.max()
+            vmin_plot = data_masked.min()
+            vmax_plot = data_masked.max()
         
         im = ax.imshow(data_masked, extent=extent_original, 
-                       cmap=cmap_feature, vmin=valid_min, vmax=valid_max, 
+                       cmap=cmap_feature, vmin=vmin_plot, vmax=vmax_plot, 
                        aspect='auto', alpha=1.0, zorder=3, interpolation='bilinear')
 
-        # Colorbar
+        # Colorbar với giá trị min/max và ticks ở khu vực giữa
         cbar = plt.colorbar(im, ax=ax, orientation='vertical', pad=0.08, shrink=0.7)
         cbar.set_label(labels_info, fontsize=12, fontweight='bold')
-        cbar.ax.tick_params(labelsize=10)
+        
+        # Tạo ticks không đều: dày hơn ở khu vực giữa (-2 đến 2), thưa hơn ở vùng biên
+        # Ví dụ: -30, -20, -10, -5, -2, -1, 0, 1, 2, 5, 10, 20, 30
+        tick_values = []
+        
+        # Vùng âm
+        if vmin_plot < -10:
+            tick_values.extend([vmin_plot, -20, -10])
+        elif vmin_plot < -5:
+            tick_values.extend([vmin_plot, -10])
+        else:
+            tick_values.append(vmin_plot)
+        
+        # Vùng giữa (dày đặc hơn)
+        if vmin_plot < -5:
+            tick_values.append(-5)
+        if vmin_plot < -2:
+            tick_values.append(-2)
+        if vmin_plot < -1:
+            tick_values.append(-1)
+        
+        tick_values.append(0)  # Luôn có 0
+        
+        if vmax_plot > 1:
+            tick_values.append(1)
+        if vmax_plot > 2:
+            tick_values.append(2)
+        if vmax_plot > 5:
+            tick_values.append(5)
+        
+        # Vùng dương
+        if vmax_plot > 10:
+            tick_values.extend([10, 20])
+        elif vmax_plot > 5:
+            tick_values.append(10)
+        
+        if vmax_plot > 20:
+            tick_values.append(vmax_plot)
+        
+        # Loại bỏ các giá trị ngoài range
+        tick_values = [v for v in tick_values if vmin_plot <= v <= vmax_plot]
+        tick_values = sorted(set(tick_values))  # Loại bỏ trùng lặp và sắp xếp
+        
+        cbar.set_ticks(tick_values)
+        cbar.ax.set_yticklabels([f'{val:.1f}' if abs(val) < 10 else f'{val:.0f}' for val in tick_values], fontsize=9)
+        cbar.ax.tick_params(labelsize=9)
+        
+        print(f"  - Colorbar ticks: {tick_values}")
 
     # Grid tọa độ - Sử dụng WGS84
     lon_range = extent_wgs84[1] - extent_wgs84[0]
@@ -365,7 +424,7 @@ try:
     ax.set_ylabel('Vĩ độ', fontsize=12, fontweight='bold')
 
     # Tiêu đề
-    ax.set_title('BẢN ĐỒ SỬ DỤNG ĐẤT (ESA WORLDCOVER 2021)', fontsize=16, fontweight='bold', pad=20)
+    ax.set_title('BẢN ĐỒ ĐỘ CONG ĐỊA HÌNH (CURVATURE)', fontsize=16, fontweight='bold', pad=20)
 
     plt.tight_layout(rect=[0, 0.02, 1, 1])
 
