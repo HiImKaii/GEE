@@ -6,7 +6,7 @@ var TRAIN_SPLIT = 0.7;
 var BUFFER_SIZE = 15; // Buffer 15m cho điểm để lấy mẫu tốt hơn
 
 var MIN_LEAF_POPULATION = 1;     // min_samples_leaf from PSO (optimal value)
-var VARIABLES_PER_SPLIT = null;  // max_features='sqrt' → GEE default (sqrt of features ≈ 3.6)
+var VARIABLES_PER_SPLIT = null;  // max_features='sqrt' from PSO → GEE default (sqrt of features)
 var BAG_FRACTION = 0.5;          // Bootstrap=False in PSO, reduced bagging
 
 var featureNames = [
@@ -51,30 +51,21 @@ print('\n========== STEP 2: EXTRACTING FEATURES ==========');
 
 var features = imageAsset.select(featureNames).clip(studyArea);
 
-// ===== TẠO THÊM ĐIỂM (BUFFER) - COMMENTED OUT =====
-// var floodPointsBuffered = floodPoints.map(function(feature) {
-//   var buffered = feature.buffer(BUFFER_SIZE);
-//   return buffered.copyProperties(feature, ['flood', 'lat', 'lon']);
-// });
-// print('✅ Applied ' + BUFFER_SIZE + 'm buffer to points');
-// 
-// var trainingData = features.sampleRegions({
-//   collection: floodPointsBuffered,
-//   properties: ['flood', 'lat', 'lon'],
-//   scale: 10,
-//   tileScale: 1,
-//   geometries: false
-// });
-// ===== END BUFFER SECTION =====
+// ===== TẠO THÊM ĐIỂM (BUFFER) =====
+var floodPointsBuffered = floodPoints.map(function(feature) {
+  var buffered = feature.buffer(BUFFER_SIZE);
+  return buffered.copyProperties(feature, ['flood', 'lat', 'lon']);
+});
+print('✅ Applied ' + BUFFER_SIZE + 'm buffer to points');
 
-// Sử dụng trực tiếp điểm gốc không buffer
 var trainingData = features.sampleRegions({
-  collection: floodPoints,
+  collection: floodPointsBuffered,
   properties: ['flood', 'lat', 'lon'],
-  scale: RESOLUTION,
+  scale: 10,
   tileScale: 1,
   geometries: false
 });
+// ===== END BUFFER SECTION =====
 
 print('Total points after sampling:', trainingData.size());
 
@@ -102,10 +93,10 @@ print('Validation samples:', validation.size());
 
 print('\n========== STEP 3: TRAINING MODEL ==========');
 
-// Random Forest with PSO optimized parameters (best from iteration 12+)
+// Random Forest with PSO (Particle Swarm Optimization) parameters
 var rfRegressor = ee.Classifier.smileRandomForest({
   numberOfTrees: NUM_TREES,              // 1000 trees (PSO optimal)
-  variablesPerSplit: VARIABLES_PER_SPLIT, // null = sqrt(features) ≈ 3.6 features
+  variablesPerSplit: VARIABLES_PER_SPLIT, // null = sqrt of features (PSO optimal)
   minLeafPopulation: MIN_LEAF_POPULATION, // 1 (optimal value)
   bagFraction: BAG_FRACTION,              // 0.5 (bootstrap disabled in PSO)
   seed: 42
@@ -115,12 +106,6 @@ var rfRegressor = ee.Classifier.smileRandomForest({
     classProperty: 'flood',
     inputProperties: featureNames
   });
-
-print('✅ Model trained with PSO optimized parameters');
-print('  PSO Best: R²=0.7742, Fitness=0.4355, MAE=0.1098, RMSE=0.2289');
-print('  Parameters: 1000 trees, sqrt features/split, min_leaf=1, bag_fraction=0.5');
-print('  Note: GEE does not support max_depth(50), max_leaf_nodes(1000), min_samples_split(20)');
-print('  PSO outperforms Random Search (R²=0.7325) by +5.7%');
 
 
 //////////////////////////////////////////////////////////////
@@ -189,44 +174,13 @@ print('\n========== STEP 5: MAKING PREDICTIONS ==========');
 var floodProbability = features.classify(rfRegressor).rename('flood_probability');
 floodProbability = floodProbability.clamp(0, 1);
 
-//////////////////////////////////////////////////////////////
-// TÍNH RISK LEVELS
-//////////////////////////////////////////////////////////////
-
-print('\n========== CALCULATING RISK LEVELS ==========');
-
-// THUẬT TOÁN: Dùng expression để phân loại rõ ràng
-var riskLevels = floodProbability.expression(
-  '(b1 < 0.25) ? 1 : ' +  // Low Risk
-  '(b1 < 0.50) ? 2 : ' +  // Moderate Risk
-  '(b1 < 0.75) ? 3 : 4',  // High Risk : Very High Risk
-  {
-    'b1': floodProbability.select('flood_probability')
-  }
-).rename('risk_level').toInt();
-
 // Reproject outputs
 floodProbability = floodProbability.reproject({
   crs: 'EPSG:4326',
   scale: RESOLUTION
 }).clip(studyArea);
 
-riskLevels = riskLevels.reproject({
-  crs: 'EPSG:4326',
-  scale: RESOLUTION
-}).clip(studyArea);
-
-print('✅ Risk levels calculated');
-
-// Kiểm tra phân bố risk levels
-var riskStats = riskLevels.reduceRegion({
-  reducer: ee.Reducer.frequencyHistogram(),
-  geometry: studyArea,
-  scale: RESOLUTION * 2,
-  maxPixels: 1e9
-});
-print('\n--- Risk Level Distribution ---');
-print('Histogram:', riskStats.get('risk_level'));
+print('✅ Flood probability calculated');
 
 // Kiểm tra range probability
 var probStats = floodProbability.reduceRegion({
@@ -261,15 +215,7 @@ var probPalette = {
   max: 1,
   palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
 };
-Map.addLayer(floodProbability, probPalette, '🎯 Flood Probability', true);
-
-// Risk levels (categorical)
-var riskPalette = {
-  min: 1,
-  max: 4,
-  palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
-};
-Map.addLayer(riskLevels, riskPalette, '📊 Risk Levels (1-4)', true);
+Map.addLayer(floodProbability, probPalette, '🎯 Flood Probability (0-1)', true);
 
 // Legend
 var legend = ui.Panel({
@@ -277,7 +223,7 @@ var legend = ui.Panel({
 });
 
 var legendTitle = ui.Label({
-  value: 'Flood Risk Levels',
+  value: 'Flood Probability (0-1)',
   style: {fontWeight: 'bold', fontSize: '16px', margin: '0 0 4px 0'}
 });
 legend.add(legendTitle);
@@ -296,10 +242,10 @@ var makeRow = function(color, name) {
   });
 };
 
-legend.add(makeRow('#00FF00', 'Level 1 (0.00-0.25): Low Risk'));
-legend.add(makeRow('#FFFF00', 'Level 2 (0.25-0.50): Moderate Risk'));
-legend.add(makeRow('#FF9900', 'Level 3 (0.50-0.75): High Risk'));
-legend.add(makeRow('#FF0000', 'Level 4 (0.75-1.00): Very High Risk'));
+legend.add(makeRow('#00FF00', '0.00-0.25: Low Probability'));
+legend.add(makeRow('#FFFF00', '0.25-0.50: Moderate Probability'));
+legend.add(makeRow('#FF9900', '0.50-0.75: High Probability'));
+legend.add(makeRow('#FF0000', '0.75-1.00: Very High Probability'));
 
 Map.add(legend);
 
@@ -311,31 +257,13 @@ print('✅ Map layers added');
 
 print('\n========== STEP 7: EXPORTING RESULTS ==========');
 
-// Export probability map
+// Export probability map (0-1 values)
 Export.image.toDrive({
   image: floodProbability,
-  description: 'flood_probability_RF',
+  description: 'flood_probability_pso_RF',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,
   fileFormat: 'GeoTIFF',
   crs: 'EPSG:4326'
-});
-
-// Export risk levels (với metadata đầy đủ)
-Export.image.toDrive({
-  image: riskLevels.toInt(),
-  description: 'flood_risk_levels_RF',
-  scale: RESOLUTION,
-  region: studyArea,
-  maxPixels: 1e13,
-  fileFormat: 'GeoTIFF',
-  crs: 'EPSG:4326'
-});
-
-// Export validation results
-Export.table.toDrive({
-  collection: validationWithErrors.select(['lat', 'lon', 'flood', 'predicted', 'error', 'squared_error', 'abs_error']),
-  description: 'validation_results_RF',
-  fileFormat: 'CSV'
 });

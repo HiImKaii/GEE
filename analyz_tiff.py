@@ -42,12 +42,4 @@ with rasterio.open(file_path) as ds:
     print(f"  Median: {np.median(valid_data):.6f}")
     print(f"  Std:    {np.std(valid_data):.6f}")
     
-    # Percentiles
-    print(f"\nPhân vị (Percentiles):")
-    print(f"  P25:  {np.percentile(valid_data, 25):.6f}")
-    print(f"  P50:  {np.percentile(valid_data, 50):.6f}")
-    print(f"  P75:  {np.percentile(valid_data, 75):.6f}")
-    print(f"  P95:  {np.percentile(valid_data, 95):.6f}")
-    
     print(f"\n{'='*60}")
-

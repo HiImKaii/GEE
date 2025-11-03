@@ -1,17 +1,16 @@
 // CẤU HÌNH MÔ HÌNH
 var RESOLUTION = 30;
-var NUM_TREES = 78; // FAST MODE: Giảm từ 763 → 78 trees (7.6x nhanh hơn)
+var NUM_TREES = 813; // Optimized from PUMA (generation 55+, R²=0.7913, Fitness=0.4793) - BEST
 var TRAIN_SPLIT = 0.7;
 var BUFFER_SIZE = 15; // Buffer 15m cho điểm để lấy mẫu tốt hơn
 
-
-var LEARNING_RATE = 0.2;               // Tăng từ 0.0975 → 0.2 (học nhanh hơn, ít epochs)
-var MAX_DEPTH = 8;                     // Giảm từ 15 → 8 (cây nông hơn, nhanh hơn)
-var SUBSAMPLE = 0.7;                   // Giảm từ 0.8737 → 0.7 (dùng ít dữ liệu hơn)
-var COLSAMPLE_BYTREE = 0.7;            // Giảm từ 0.9222 → 0.7 (dùng ít features hơn)
-var REG_ALPHA = 0.05;                  // Tăng từ 0.0411 → 0.05 (regularization mạnh hơn)
-var REG_LAMBDA = 0.3;                  // Giảm từ 0.5327 → 0.3 (giảm phức tạp)
-// Optimizations: Fewer trees, shallower depth, higher learning rate = 7-8x faster training
+var LEARNING_RATE = 0.01;              // Optimized: 0.01 (PUMA best - slow but most accurate)
+var MAX_DEPTH = 15;                    // Optimized: 15 (deep trees for maximum accuracy)
+var SUBSAMPLE = 1.0;                   // Optimized: 1.0 (use all data per tree)
+var COLSAMPLE_BYTREE = 1.0;            // Optimized: 1.0 (use all features per tree)
+var REG_ALPHA = 0.1668;                // Optimized: 0.166810595 (L1 regularization)
+var REG_LAMBDA = 0.7185;               // Optimized: 0.718503456 (L2 regularization)
+// Parameters from PUMA (Proximal Updating Meta-heuristic) - generation 55+ (BEST performance)
 
 var featureNames = [
   'lulc', 'Density_River', 'Density_Road', 'Distan2river', 'Distan2road_met',
@@ -19,74 +18,20 @@ var featureNames = [
 ];
 
 //////////////////////////////////////////////////////////////
-// FUNCTION: NỘI SUY GIÁ TRỊ NULL (INTERPOLATE NULL VALUES)
-//////////////////////////////////////////////////////////////
-var interpolateNulls = function(image, bandNames, radius, iterations) {
-  var interpolated = image;
-  
-  for (var i = 0; i < iterations; i++) {
-    var newBands = bandNames.map(function(bandName) {
-      var band = interpolated.select([bandName]);
-      var validMask = band.mask();
-      var filled = band.focal_mean({
-        radius: radius,
-        units: 'meters',
-        kernelType: 'square'
-      });
-      var result = band.unmask(filled);
-      return result.rename(bandName);
-    });
-    
-    interpolated = ee.Image(newBands);
-  }
-  
-  return interpolated;
-};
-
-//////////////////////////////////////////////////////////////
-// FUNCTION: THỐNG KÊ NULL VALUES
-//////////////////////////////////////////////////////////////
-
-var countNullPixels = function(image, bandNames, region, scale, label) {
-  print('\n--- ' + label + ' ---');
-  
-  var stats = ee.List(bandNames).map(function(bandName) {
-    var band = image.select([bandName]);
-    
-    var totalPixels = band.unmask(-9999).reduceRegion({
-      reducer: ee.Reducer.count(),
-      geometry: region,
-      scale: scale,
-      maxPixels: 1e9
-    });
-    
-    var validPixels = band.reduceRegion({
-      reducer: ee.Reducer.count(),
-      geometry: region,
-      scale: scale,
-      maxPixels: 1e9
-    });
-    
-    var total = ee.Number(totalPixels.get(bandName));
-    var valid = ee.Number(validPixels.get(bandName));
-    var nullCount = total.subtract(valid);
-    var nullPercent = nullCount.divide(total).multiply(100);
-    
-    return ee.Dictionary({
-      'band': bandName,
-      'total': total,
-      'valid': valid,
-      'null': nullCount,
-      'null_percent': nullPercent
-    });
-  });
-  
-  print(stats);
-};
-
-//////////////////////////////////////////////////////////////
 // BƯỚC 1: LOAD ASSETS
 //////////////////////////////////////////////////////////////
+
+print('\n========== STEP 1: LOADING ASSETS ==========');
+
+if (typeof studyArea === 'undefined') {
+  print('ERROR: studyArea not imported!');
+}
+if (typeof imageAsset === 'undefined') {
+  print('ERROR: imageAsset not imported!');
+}
+if (typeof floodPoints === 'undefined') {
+  print('ERROR: floodPoints not imported!');
+}
 
 var floodPoints = floodPoints.map(function(feature) {
   var lon = ee.Number(feature.get('lon'));
@@ -109,11 +54,11 @@ print('\n========== STEP 2: EXTRACTING FEATURES ==========');
 
 var features = imageAsset.select(featureNames).clip(studyArea);
 
+// ===== TẠO THÊM ĐIỂM (BUFFER) =====
 var floodPointsBuffered = floodPoints.map(function(feature) {
   var buffered = feature.buffer(BUFFER_SIZE);
   return buffered.copyProperties(feature, ['flood', 'lat', 'lon']);
 });
-
 print('✅ Applied ' + BUFFER_SIZE + 'm buffer to points');
 
 var trainingData = features.sampleRegions({
@@ -123,6 +68,7 @@ var trainingData = features.sampleRegions({
   tileScale: 1,
   geometries: false
 });
+// ===== END BUFFER SECTION =====
 
 print('Total points after sampling:', trainingData.size());
 
@@ -230,73 +176,16 @@ print('\n========== STEP 5: MAKING PREDICTIONS ==========');
 var floodProbability = features.classify(xgbRegressor).rename('flood_probability');
 floodProbability = floodProbability.clamp(0, 1);
 
-//////////////////////////////////////////////////////////////
-// BƯỚC 5.5: KIỂM TRA VÀ NỘI SUY NULL TRONG PREDICTION
-//////////////////////////////////////////////////////////////
-
-print('\n========== STEP 5.5: CHECK & INTERPOLATE NULLS IN PREDICTION ==========');
-
-countNullPixels(floodProbability, ['flood_probability'], studyArea, RESOLUTION * 2,
-                'NULL COUNT BEFORE INTERPOLATION (Prediction)');
-
-print('\n🔄 Interpolating null values in prediction...');
-print('  Radius: 90m (3 pixels) | Iterations: 3');
-
-var floodProbabilityInterpolated = interpolateNulls(
-  floodProbability,
-  ['flood_probability'],
-  90,
-  3
-);
-
-floodProbabilityInterpolated = floodProbabilityInterpolated.clamp(0, 1);
-
-countNullPixels(floodProbabilityInterpolated, ['flood_probability'], studyArea, RESOLUTION * 2,
-                'NULL COUNT AFTER INTERPOLATION (Prediction)');
-
-print('✅ Prediction interpolation completed');
-
-//////////////////////////////////////////////////////////////
-// TÍNH RISK LEVELS (FIXED ALGORITHM)
-//////////////////////////////////////////////////////////////
-
-print('\n========== CALCULATING RISK LEVELS ==========');
-
-// THUẬT TOÁN MỚI: Dùng expression để phân loại rõ ràng
-var riskLevels = floodProbabilityInterpolated.expression(
-  '(b1 < 0.25) ? 1 : ' +  // Low Risk
-  '(b1 < 0.50) ? 2 : ' +  // Moderate Risk
-  '(b1 < 0.75) ? 3 : 4',  // High Risk : Very High Risk
-  {
-    'b1': floodProbabilityInterpolated.select('flood_probability')
-  }
-).rename('risk_level').toInt();
-
 // Reproject outputs
-floodProbabilityInterpolated = floodProbabilityInterpolated.reproject({
+floodProbability = floodProbability.reproject({
   crs: 'EPSG:4326',
   scale: RESOLUTION
 }).clip(studyArea);
 
-riskLevels = riskLevels.reproject({
-  crs: 'EPSG:4326',
-  scale: RESOLUTION
-}).clip(studyArea);
-
-print('✅ Risk levels calculated');
-
-// Kiểm tra phân bố risk levels
-var riskStats = riskLevels.reduceRegion({
-  reducer: ee.Reducer.frequencyHistogram(),
-  geometry: studyArea,
-  scale: RESOLUTION * 2,
-  maxPixels: 1e9
-});
-print('\n--- Risk Level Distribution ---');
-print('Histogram:', riskStats.get('risk_level'));
+print('✅ Flood probability calculated');
 
 // Kiểm tra range probability
-var probStats = floodProbabilityInterpolated.reduceRegion({
+var probStats = floodProbability.reduceRegion({
   reducer: ee.Reducer.minMax(),
   geometry: studyArea,
   scale: RESOLUTION * 10,
@@ -328,15 +217,7 @@ var probPalette = {
   max: 1,
   palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
 };
-Map.addLayer(floodProbabilityInterpolated, probPalette, '🎯 Flood Probability', true);
-
-// Risk levels (categorical)
-var riskPalette = {
-  min: 1,
-  max: 4,
-  palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
-};
-Map.addLayer(riskLevels, riskPalette, '📊 Risk Levels (1-4)', true);
+Map.addLayer(floodProbability, probPalette, '🎯 Flood Probability (0-1)', true);
 
 // Legend
 var legend = ui.Panel({
@@ -344,7 +225,7 @@ var legend = ui.Panel({
 });
 
 var legendTitle = ui.Label({
-  value: 'Flood Risk Levels',
+  value: 'Flood Probability (0-1)',
   style: {fontWeight: 'bold', fontSize: '16px', margin: '0 0 4px 0'}
 });
 legend.add(legendTitle);
@@ -363,10 +244,10 @@ var makeRow = function(color, name) {
   });
 };
 
-legend.add(makeRow('#00FF00', 'Level 1 (0.00-0.25): Low Risk'));
-legend.add(makeRow('#FFFF00', 'Level 2 (0.25-0.50): Moderate Risk'));
-legend.add(makeRow('#FF9900', 'Level 3 (0.50-0.75): High Risk'));
-legend.add(makeRow('#FF0000', 'Level 4 (0.75-1.00): Very High Risk'));
+legend.add(makeRow('#00FF00', '0.00-0.25: Low Probability'));
+legend.add(makeRow('#FFFF00', '0.25-0.50: Moderate Probability'));
+legend.add(makeRow('#FF9900', '0.50-0.75: High Probability'));
+legend.add(makeRow('#FF0000', '0.75-1.00: Very High Probability'));
 
 Map.add(legend);
 
@@ -378,21 +259,10 @@ print('✅ Map layers added');
 
 print('\n========== STEP 7: EXPORTING RESULTS ==========');
 
-// Export probability map
+// Export probability map (0-1 values)
 Export.image.toDrive({
-  image: floodProbabilityInterpolated,
-  description: 'flood_probability_XGB',
-  scale: RESOLUTION,
-  region: studyArea,
-  maxPixels: 1e13,
-  fileFormat: 'GeoTIFF',
-  crs: 'EPSG:4326'
-});
-
-// Export risk levels (với metadata đầy đủ)
-Export.image.toDrive({
-  image: riskLevels.toInt(),
-  description: 'flood_risk_levels_XGB',
+  image: floodProbability,
+  description: 'flood_probability_puma_XGB',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,

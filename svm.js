@@ -1,40 +1,18 @@
-// CẤU HÌNH MÔ HÌNH SVR - IMPROVED VERSION
+// CẤU HÌNH MÔ HÌNH SVR - OPTIMIZED VERSION
 var RESOLUTION = 30;
 var TRAIN_SPLIT = 0.7;
 var BUFFER_SIZE = 15;
 
-// SVR Parameters - RANDOM SET #2
+// SVR Parameters - Optimized from PSO (iteration 98, R²=0.5923, Fitness=0.0991) - BEST
 var SVM_KERNEL = 'RBF';       // RBF kernel 
-var SVM_C = 75.5;             // Cost parameter
-var SVM_GAMMA = 0.0321;       // Gamma for RBF kernel
-var SVM_EPSILON = 0.08;       // Epsilon for SVR
+var SVM_C = 1.193;            // Cost parameter: 1.1928841970033406
+var SVM_GAMMA = 0.0787;       // Gamma: 0.0787381332672518
+var SVM_EPSILON = 0.118;      // Epsilon: 0.1177825297466713
 
 var featureNames = [
   'lulc', 'Density_River', 'Density_Road', 'Distan2river', 'Distan2road_met',
   'aspect', 'curvature', 'dem', 'flowDir', 'slope', 'twi', 'NDVI', 'rainfall'
 ];
-
-var interpolateNulls = function(image, bandNames, radius, iterations) {
-  var interpolated = image;
-  
-  for (var i = 0; i < iterations; i++) {
-    var newBands = bandNames.map(function(bandName) {
-      var band = interpolated.select([bandName]);
-      var validMask = band.mask();
-      var filled = band.focal_mean({
-        radius: radius,
-        units: 'meters',
-        kernelType: 'square'
-      });
-      var result = band.unmask(filled);
-      return result.rename(bandName);
-    });
-    
-    interpolated = ee.Image(newBands);
-  }
-  
-  return interpolated;
-};
 
 //////////////////////////////////////////////////////////////
 // FUNCTION: STANDARDIZATION (Z-SCORE) - Better than Min-Max for SVR
@@ -286,50 +264,13 @@ var floodProbability = featuresStd.select(standardizedFeatureNames)
   .clamp(0, 1)
   .rename('flood_probability');
 
-//////////////////////////////////////////////////////////////
-// BƯỚC 5.5: NỘI SUY NULL
-//////////////////////////////////////////////////////////////
-
-print('\n========== STEP 5.5: INTERPOLATING NULLS ==========');
-
-var floodProbabilityInterpolated = interpolateNulls(
-  floodProbability,
-  ['flood_probability'],
-  90,
-  3
-);
-
-floodProbabilityInterpolated = floodProbabilityInterpolated.clamp(0, 1);
-
-print('✅ Prediction interpolation completed');
-
-//////////////////////////////////////////////////////////////
-// TÍNH RISK LEVELS
-//////////////////////////////////////////////////////////////
-
-print('\n========== CALCULATING RISK LEVELS ==========');
-
-var riskLevels = floodProbabilityInterpolated.expression(
-  '(b1 < 0.25) ? 1 : ' +
-  '(b1 < 0.50) ? 2 : ' +
-  '(b1 < 0.75) ? 3 : 4',
-  {
-    'b1': floodProbabilityInterpolated.select('flood_probability')
-  }
-).rename('risk_level').toInt();
-
 // Reproject outputs
-floodProbabilityInterpolated = floodProbabilityInterpolated.reproject({
+floodProbability = floodProbability.reproject({
   crs: 'EPSG:4326',
   scale: RESOLUTION
 }).clip(studyArea);
 
-riskLevels = riskLevels.reproject({
-  crs: 'EPSG:4326',
-  scale: RESOLUTION
-}).clip(studyArea);
-
-print('✅ Risk levels calculated');
+print('✅ Flood probability calculated');
 
 //////////////////////////////////////////////////////////////
 // BƯỚC 6: VISUALIZATION
@@ -351,14 +292,7 @@ var probPalette = {
   max: 1,
   palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
 };
-Map.addLayer(floodProbabilityInterpolated, probPalette, '🎯 Flood Probability (SVR)', true);
-
-var riskPalette = {
-  min: 1,
-  max: 4,
-  palette: ['#00FF00', '#FFFF00', '#FF9900', '#FF0000']
-};
-Map.addLayer(riskLevels, riskPalette, '📊 Risk Levels (1-4)', true);
+Map.addLayer(floodProbability, probPalette, '🎯 Flood Probability (0-1)', true);
 
 // Legend
 var legend = ui.Panel({
@@ -366,7 +300,7 @@ var legend = ui.Panel({
 });
 
 var legendTitle = ui.Label({
-  value: 'Flood Risk Levels (SVR)',
+  value: 'Flood Probability (0-1)',
   style: {fontWeight: 'bold', fontSize: '16px', margin: '0 0 4px 0'}
 });
 legend.add(legendTitle);
@@ -385,10 +319,10 @@ var makeRow = function(color, name) {
   });
 };
 
-legend.add(makeRow('#00FF00', 'Level 1 (0.00-0.25): Low Risk'));
-legend.add(makeRow('#FFFF00', 'Level 2 (0.25-0.50): Moderate Risk'));
-legend.add(makeRow('#FF9900', 'Level 3 (0.50-0.75): High Risk'));
-legend.add(makeRow('#FF0000', 'Level 4 (0.75-1.00): Very High Risk'));
+legend.add(makeRow('#00FF00', '0.00-0.25: Low Probability'));
+legend.add(makeRow('#FFFF00', '0.25-0.50: Moderate Probability'));
+legend.add(makeRow('#FF9900', '0.50-0.75: High Probability'));
+legend.add(makeRow('#FF0000', '0.75-1.00: Very High Probability'));
 
 Map.add(legend);
 
@@ -396,19 +330,10 @@ print('✅ Map layers added');
 
 print('\n========== STEP 7: EXPORTING RESULTS ==========');
 
+// Export probability map (0-1 values)
 Export.image.toDrive({
-  image: floodProbabilityInterpolated,
-  description: 'flood_probability_SVR',
-  scale: RESOLUTION,
-  region: studyArea,
-  maxPixels: 1e13,
-  fileFormat: 'GeoTIFF',
-  crs: 'EPSG:4326'
-});
-
-Export.image.toDrive({
-  image: riskLevels.toInt(),
-  description: 'flood_risk_levels_SVR',
+  image: floodProbability,
+  description: 'flood_probability_pso_SVR',
   scale: RESOLUTION,
   region: studyArea,
   maxPixels: 1e13,
