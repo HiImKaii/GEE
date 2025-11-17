@@ -33,13 +33,23 @@ def read_tiff(file_path):
     
     return data, extent_original, extent_wgs84, src_crs, nodata_value
 
-# ===== HÀM TẠO BỘ MÀU CHO XÁC SUẤT NGẬP LỤT =====
-def get_flood_probability_colormap():
-    """Trả về colormap cho xác suất ngập lụt (0-1)"""
-    # Màu từ xanh lá (không ngập) -> vàng -> cam -> đỏ (ngập cao)
-    colors = ['#00FF00', '#7FFF00', '#FFFF00', '#FFD700', '#FFA500', '#FF4500', '#FF0000', '#8B0000']
-    label = 'Xác suất ngập lụt'
-    cmap = LinearSegmentedColormap.from_list('flood_prob', colors)
+# ===== HÀM TẠO BỘ MÀU CHO PHÂN NGƯỠNG =====
+def get_threshold_colormap():
+    """Trả về colormap cho dữ liệu phân ngưỡng (1-5)"""
+    from matplotlib.colors import ListedColormap
+    
+    # Màu cho từng mức ngưỡng (0: NoData, 1-5: các mức)
+    colors = [
+        '#FFFFFF',  # 0 - NoData (trắng/transparent)
+        '#55FF00',  # 1 - Rất thấp
+        '#AAFF00',  # 2 - Thấp
+        '#FFFF00',  # 3 - Trung bình
+        '#FFAA00',  # 4 - Cao
+        '#FF0000'   # 5 - Rất cao
+    ]
+    
+    label = 'Mức độ nhạy cảm với ngập lụt'
+    cmap = ListedColormap(colors)
     cmap.set_bad(color='lightgray', alpha=0.3)
     return cmap, label
 
@@ -217,8 +227,8 @@ def draw_compass_rose(ax, x_pos=0.95, y_pos=0.88, size=0.045):
            family='serif', color='black')
 
 # ===== CẤU HÌNH THƯ MỤC =====
-input_folder = r"D:\prj\results\map\cliped\probability"
-output_folder = r"D:\prj\map\results"
+input_folder = r"D:\prj\results\map\thresholded"
+output_folder = r"D:\prj\map\ThreshHold"
 
 # Tạo thư mục output nếu chưa có
 os.makedirs(output_folder, exist_ok=True)
@@ -242,20 +252,22 @@ print("="*80)
 
 # ===== XỬ LÝ TỪNG FILE =====
 for idx, input_file in enumerate(all_tiff_files, 1):
-    # Phân tích tên file để tạo tên output
+    # Phân tích tên file để tạo tên output - GIỮ NGUYÊN TÊN
     filename = os.path.basename(input_file)
     
-    # Trích xuất algorithm và model từ tên file
+    # Trích xuất algorithm và model từ tên file để tạo tên giống hệt
     try:
-        parts = filename.replace('cliped_flood_probability_', '').replace('.tif', '').split('_')
+        # Bỏ phần "_thresholded" nếu có, chỉ giữ lại tên gốc
+        base_name = filename.replace('_thresholded.tif', '.tif').replace('.tif', '')
+        parts = base_name.replace('cliped_flood_probability_', '').split('_')
         if len(parts) >= 2:
             algorithm = parts[0]
             model = parts[1]
             output_filename = f"{algorithm}_{model}.png"
         else:
-            output_filename = filename.replace('.tif', '.png')
+            output_filename = filename.replace('.tif', '.png').replace('_thresholded', '')
     except:
-        output_filename = filename.replace('.tif', '.png')
+        output_filename = filename.replace('.tif', '.png').replace('_thresholded', '')
     
     output_file = os.path.join(output_folder, output_filename)
 
@@ -269,10 +281,10 @@ for idx, input_file in enumerate(all_tiff_files, 1):
         print("Đọc file TIFF...")
         data, extent_original, extent_wgs84, src_crs, nodata_value = read_tiff(input_file)
         
-        print(f"  - Xác suất ngập lụt (0 = không ngập, 1 = chắc chắn ngập)")
+        print(f"  - Dữ liệu phân ngưỡng (0 = NoData, 1-5 = mức độ nguy cơ)")
         
-        # Mask NoData và NaN
-        mask_condition = np.isnan(data)
+        # Mask NoData (giá trị 0) và NaN
+        mask_condition = np.isnan(data) | (data == 0)
         if nodata_value is not None:
             mask_condition = mask_condition | (data == nodata_value)
         print(f"  - Masking NaN và NoData values")
@@ -282,20 +294,22 @@ for idx, input_file in enumerate(all_tiff_files, 1):
         valid_data = data_masked.compressed()
         
         if len(valid_data) > 0:
-            print(f"Data range (valid): {valid_data.min():.4f} to {valid_data.max():.4f}")
-            print(f"Data mean (valid): {valid_data.mean():.4f}")
-            print(f"Data std (valid): {valid_data.std():.4f}")
+            print(f"Data range (valid): {int(valid_data.min())} to {int(valid_data.max())}")
             
-            # Thống kê
-            low_risk = np.sum((valid_data >= 0) & (valid_data < 0.3))
-            medium_risk = np.sum((valid_data >= 0.3) & (valid_data < 0.7))
-            high_risk = np.sum((valid_data >= 0.7) & (valid_data <= 1.0))
+            # Thống kê theo ngưỡng
+            level_1 = np.sum(valid_data == 1)
+            level_2 = np.sum(valid_data == 2)
+            level_3 = np.sum(valid_data == 3)
+            level_4 = np.sum(valid_data == 4)
+            level_5 = np.sum(valid_data == 5)
             total = len(valid_data)
             
             print(f"  - Phân bố nguy cơ ngập:")
-            print(f"    + Thấp (0.0-0.3): {low_risk:,} pixels ({low_risk/total*100:.2f}%)")
-            print(f"    + Trung bình (0.3-0.7): {medium_risk:,} pixels ({medium_risk/total*100:.2f}%)")
-            print(f"    + Cao (0.7-1.0): {high_risk:,} pixels ({high_risk/total*100:.2f}%)")
+            print(f"    + Mức 1 (Rất thấp): {level_1:,} pixels ({level_1/total*100:.2f}%)")
+            print(f"    + Mức 2 (Thấp): {level_2:,} pixels ({level_2/total*100:.2f}%)")
+            print(f"    + Mức 3 (Trung bình): {level_3:,} pixels ({level_3/total*100:.2f}%)")
+            print(f"    + Mức 4 (Cao): {level_4:,} pixels ({level_4/total*100:.2f}%)")
+            print(f"    + Mức 5 (Rất cao): {level_5:,} pixels ({level_5/total*100:.2f}%)")
         else:
             print("WARNING: Không có dữ liệu hợp lệ!")
         
@@ -309,8 +323,8 @@ for idx, input_file in enumerate(all_tiff_files, 1):
 
         print("Vẽ bản đồ...")
         
-        # Colormap
-        cmap_flood, label_flood = get_flood_probability_colormap()
+        # Colormap cho phân ngưỡng
+        cmap_threshold, label_threshold = get_threshold_colormap()
 
         # Kiểm tra kích thước ảnh
         total_pixels = data.shape[0] * data.shape[1]
@@ -330,19 +344,21 @@ for idx, input_file in enumerate(all_tiff_files, 1):
         else:
             print(f"⚠ Bỏ qua basemap do ảnh quá lớn ({total_pixels:,} pixels)")
 
-        # Vẽ dữ liệu
+        # Vẽ dữ liệu phân ngưỡng
         im = ax.imshow(data_masked, extent=extent_original,
-                      cmap=cmap_flood, vmin=0, vmax=1,
-                      aspect='auto', alpha=0.85, zorder=3, interpolation='bilinear')
+                      cmap=cmap_threshold, vmin=0, vmax=5,
+                      aspect='auto', alpha=0.85, zorder=3, interpolation='nearest')
 
-        # Colorbar
-        cbar = plt.colorbar(im, ax=ax, orientation='vertical', pad=0.08, shrink=0.7)
-        cbar.set_label(label_flood, fontsize=12, fontweight='bold')
+        # Colorbar với chú giải
+        cbar = plt.colorbar(im, ax=ax, orientation='vertical', pad=0.08, shrink=0.7, 
+                           boundaries=[0.5, 1.5, 2.5, 3.5, 4.5, 5.5], 
+                           ticks=[1, 2, 3, 4, 5])
+        cbar.set_label(label_threshold, fontsize=12, fontweight='bold')
         
-        tick_values = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-        cbar.set_ticks(tick_values)
-        cbar.ax.set_yticklabels([f'{val:.1f}' for val in tick_values], fontsize=9)
-        cbar.ax.tick_params(labelsize=9)
+        # Thiết lập labels cho 5 mức - căn giữa mỗi màu
+        tick_labels = ['Rất thấp', 'Thấp', 'Trung bình', 'Cao', 'Rất cao']
+        cbar.ax.set_yticklabels(tick_labels, fontsize=10)
+        cbar.ax.tick_params(labelsize=10)
 
         # Grid tọa độ
         lon_range = extent_wgs84[1] - extent_wgs84[0]
@@ -423,14 +439,14 @@ for idx, input_file in enumerate(all_tiff_files, 1):
         ax.set_xlabel('Kinh độ', fontsize=12, fontweight='bold')
         ax.set_ylabel('Vĩ độ', fontsize=12, fontweight='bold')
 
-        # Tiêu đề
-        parts = filename.replace('cliped_flood_probability_', '').replace('.tif', '').split('_')
+        # Tiêu đề - giữ nguyên tên file
+        parts = filename.replace('cliped_flood_probability_', '').replace('_thresholded.tif', '').replace('.tif', '').split('_')
         if len(parts) >= 2:
             algorithm = parts[0].upper()
             model = parts[1].upper()
-            title = f'BẢN ĐỒ XÁC SUẤT NGẬP LỤT - {algorithm} + {model}'
+            title = f'BẢN ĐỒ MỨC ĐỘ NHẠY CẢM VỚI NGẬP LỤT - {algorithm} + {model}'
         else:
-            title = 'BẢN ĐỒ XÁC SUẤT NGẬP LỤT'
+            title = 'BẢN ĐỒ MỨC ĐỘ NHẠY CẢM VỚI NGẬP LỤT'
         
         ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
 
