@@ -227,24 +227,43 @@ def draw_compass_rose(ax, x_pos=0.95, y_pos=0.88, size=0.045):
            family='serif', color='black')
 
 # ===== CẤU HÌNH THƯ MỤC =====
-input_folder = r"D:\prj\results\map\thresholded"
+input_folder = r"D:\prj\results\map\threshold"
 output_folder = r"D:\prj\map\ThreshHold"
+
+# Các thư mục con cần xử lý
+subfolders = ['rf', 'svr', 'xgb']
+
+# Các thư mục cần bỏ qua
+exclude_folders = ['thresholded']
 
 # Tạo thư mục output nếu chưa có
 os.makedirs(output_folder, exist_ok=True)
 
 # ===== TÌM TẤT CẢ FILE TIFF =====
 print(f"Đang tìm kiếm file TIFF trong: {input_folder}")
+print(f"Thư mục con xử lý: {', '.join(subfolders)}")
+print(f"Thư mục bỏ qua: {', '.join(exclude_folders)}")
 print("="*80)
 
-# Tìm tất cả file .tif trong các thư mục con
+# Tìm tất cả file .tif trong các thư mục con được chỉ định
 all_tiff_files = []
-for root, dirs, files in os.walk(input_folder):
-    for file in files:
-        if file.endswith('.tif') and not file.endswith('.aux.xml'):
-            full_path = os.path.join(root, file)
-            all_tiff_files.append(full_path)
+for subfolder in subfolders:
+    subfolder_path = os.path.join(input_folder, subfolder)
+    
+    if not os.path.exists(subfolder_path):
+        print(f"⚠ Thư mục không tồn tại: {subfolder}")
+        continue
+    
+    print(f"\nQuét thư mục: {subfolder}")
+    for file in os.listdir(subfolder_path):
+        if (file.endswith('.tif') or file.endswith('.tiff')) and not file.endswith('.aux.xml'):
+            # Bỏ qua file trong thư mục exclude
+            full_path = os.path.join(subfolder_path, file)
+            if not any(excluded in full_path for excluded in exclude_folders):
+                all_tiff_files.append(full_path)
+                print(f"  - {file}")
 
+print("\n" + "="*80)
 print(f"Tìm thấy {len(all_tiff_files)} file TIFF:")
 for i, file in enumerate(all_tiff_files, 1):
     print(f"  {i}. {os.path.basename(file)}")
@@ -252,22 +271,23 @@ print("="*80)
 
 # ===== XỬ LÝ TỪNG FILE =====
 for idx, input_file in enumerate(all_tiff_files, 1):
-    # Phân tích tên file để tạo tên output - GIỮ NGUYÊN TÊN
+    # Phân tích tên file để tạo tên output
     filename = os.path.basename(input_file)
     
-    # Trích xuất algorithm và model từ tên file để tạo tên giống hệt
+    # Trích xuất algorithm và model từ tên file
     try:
-        # Bỏ phần "_thresholded" nếu có, chỉ giữ lại tên gốc
-        base_name = filename.replace('_thresholded.tif', '.tif').replace('.tif', '')
-        parts = base_name.replace('cliped_flood_probability_', '').split('_')
+        # Loại bỏ các tiền tố và hậu tố không cần thiết
+        base_name = filename.replace('cliped_', '').replace('_thresholded', '').replace('.tif', '').replace('.tiff', '')
+        # Lấy phần flood_susceptibility_xxx_YYY hoặc flood_probability_xxx_YYY
+        parts = base_name.replace('flood_susceptibility_', '').replace('flood_probability_', '').split('_')
         if len(parts) >= 2:
-            algorithm = parts[0]
-            model = parts[1]
+            algorithm = parts[0]  # pso, puma, rso
+            model = parts[1]      # RF, SVR, XGB
             output_filename = f"{algorithm}_{model}.png"
         else:
-            output_filename = filename.replace('.tif', '.png').replace('_thresholded', '')
+            output_filename = filename.replace('.tif', '.png').replace('.tiff', '.png')
     except:
-        output_filename = filename.replace('.tif', '.png').replace('_thresholded', '')
+        output_filename = filename.replace('.tif', '.png').replace('.tiff', '.png')
     
     output_file = os.path.join(output_folder, output_filename)
 
@@ -281,7 +301,7 @@ for idx, input_file in enumerate(all_tiff_files, 1):
         print("Đọc file TIFF...")
         data, extent_original, extent_wgs84, src_crs, nodata_value = read_tiff(input_file)
         
-        print(f"  - Dữ liệu phân ngưỡng (0 = NoData, 1-5 = mức độ nguy cơ)")
+        print(f"  - Dữ liệu phân ngưỡng (0 = NoData, 1-5 = mức độ nhạy cảm)")
         
         # Mask NoData (giá trị 0) và NaN
         mask_condition = np.isnan(data) | (data == 0)
@@ -304,12 +324,12 @@ for idx, input_file in enumerate(all_tiff_files, 1):
             level_5 = np.sum(valid_data == 5)
             total = len(valid_data)
             
-            print(f"  - Phân bố nguy cơ ngập:")
-            print(f"    + Mức 1 (Rất thấp): {level_1:,} pixels ({level_1/total*100:.2f}%)")
-            print(f"    + Mức 2 (Thấp): {level_2:,} pixels ({level_2/total*100:.2f}%)")
-            print(f"    + Mức 3 (Trung bình): {level_3:,} pixels ({level_3/total*100:.2f}%)")
-            print(f"    + Mức 4 (Cao): {level_4:,} pixels ({level_4/total*100:.2f}%)")
-            print(f"    + Mức 5 (Rất cao): {level_5:,} pixels ({level_5/total*100:.2f}%)")
+            print(f"  - Phân bố mức độ nhạy cảm:")
+            print(f"    + Mức 1 (Rất thấp, 0.000-0.125): {level_1:,} pixels ({level_1/total*100:.2f}%)")
+            print(f"    + Mức 2 (Thấp, 0.126-0.282): {level_2:,} pixels ({level_2/total*100:.2f}%)")
+            print(f"    + Mức 3 (Trung bình, 0.283-0.475): {level_3:,} pixels ({level_3/total*100:.2f}%)")
+            print(f"    + Mức 4 (Cao, 0.476-0.741): {level_4:,} pixels ({level_4/total*100:.2f}%)")
+            print(f"    + Mức 5 (Rất cao, 0.742-1.000): {level_5:,} pixels ({level_5/total*100:.2f}%)")
         else:
             print("WARNING: Không có dữ liệu hợp lệ!")
         
@@ -355,10 +375,16 @@ for idx, input_file in enumerate(all_tiff_files, 1):
                            ticks=[1, 2, 3, 4, 5])
         cbar.set_label(label_threshold, fontsize=12, fontweight='bold')
         
-        # Thiết lập labels cho 5 mức - căn giữa mỗi màu
-        tick_labels = ['Rất thấp', 'Thấp', 'Trung bình', 'Cao', 'Rất cao']
-        cbar.ax.set_yticklabels(tick_labels, fontsize=10)
-        cbar.ax.tick_params(labelsize=10)
+        # Thiết lập labels cho 5 mức với giá trị ngưỡng - căn giữa mỗi màu
+        tick_labels = [
+            'Rất thấp\n(0.000-0.125)',
+            'Thấp\n(0.126-0.282)',
+            'Trung bình\n(0.283-0.475)',
+            'Cao\n(0.476-0.741)',
+            'Rất cao\n(0.742-1.000)'
+        ]
+        cbar.ax.set_yticklabels(tick_labels, fontsize=9)
+        cbar.ax.tick_params(labelsize=9)
 
         # Grid tọa độ
         lon_range = extent_wgs84[1] - extent_wgs84[0]
@@ -439,11 +465,12 @@ for idx, input_file in enumerate(all_tiff_files, 1):
         ax.set_xlabel('Kinh độ', fontsize=12, fontweight='bold')
         ax.set_ylabel('Vĩ độ', fontsize=12, fontweight='bold')
 
-        # Tiêu đề - giữ nguyên tên file
-        parts = filename.replace('cliped_flood_probability_', '').replace('_thresholded.tif', '').replace('.tif', '').split('_')
+        # Tiêu đề - trích xuất từ tên file
+        base_name = filename.replace('cliped_', '').replace('_thresholded', '').replace('.tif', '').replace('.tiff', '')
+        parts = base_name.replace('flood_susceptibility_', '').replace('flood_probability_', '').split('_')
         if len(parts) >= 2:
-            algorithm = parts[0].upper()
-            model = parts[1].upper()
+            algorithm = parts[0].upper()  # PSO, PUMA, RSO
+            model = parts[1].upper()      # RF, SVR, XGB
             title = f'BẢN ĐỒ MỨC ĐỘ NHẠY CẢM VỚI NGẬP LỤT - {algorithm} + {model}'
         else:
             title = 'BẢN ĐỒ MỨC ĐỘ NHẠY CẢM VỚI NGẬP LỤT'

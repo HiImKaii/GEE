@@ -49,7 +49,7 @@ def chuan_hoa_du_lieu(file_path):
 
 if __name__ == "__main__":
     # Đường dẫn file đầu vào
-    input_file = r"D:\25-26_HKI_DATN_QuanVX\train\data\flood_points.csv"
+    input_file = r"D:\25-26_HKI_DATN_QuanVX\train\data\training_data.csv"
     
     # Thực hiện chuẩn hóa
     chuan_hoa_du_lieu(input_file)

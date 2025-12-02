@@ -70,70 +70,33 @@ def cut_tiff(input_tiff, shapefile, output_file):
         print(f"✗ Lỗi khi cắt {os.path.basename(input_tiff)}: {e}")
         return False
 
-def batch_cut_tiff(input_base_dir, output_base_dir, shapefile):
-    """
-    Cắt tất cả file TIFF trong thư mục input và lưu vào output với cấu trúc tương tự
-    """
-    input_path = Path(input_base_dir)
-    output_path = Path(output_base_dir)
-    
-    # Đếm số file đã xử lý
-    success_count = 0
-    fail_count = 0
-    total_count = 0
-    
-    # Duyệt qua tất cả các file TIFF trong thư mục input
-    for tiff_file in input_path.rglob("*.tif"):
-        total_count += 1
-        
-        # Tính toán đường dẫn tương đối từ input_base_dir
-        relative_path = tiff_file.relative_to(input_path)
-        
-        # Tạo đường dẫn output với cấu trúc thư mục tương tự
-        output_dir = output_path / relative_path.parent
-        
-        # Tạo thư mục output nếu chưa tồn tại
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Tạo tên file output với tiền tố "cliped_"
-        output_filename = f"cliped_{tiff_file.name}"
-        output_file = output_dir / output_filename
-        
-        print(f"\n[{total_count}] Đang xử lý: {relative_path}")
-        
-        # Cắt file TIFF
-        if cut_tiff(str(tiff_file), shapefile, str(output_file)):
-            success_count += 1
-        else:
-            fail_count += 1
-    
-    # Tổng kết
-    print("\n" + "="*60)
-    print("TỔNG KẾT:")
-    print(f"  Tổng số file: {total_count}")
-    print(f"  Thành công: {success_count}")
-    print(f"  Thất bại: {fail_count}")
-    print("="*60)
-
 if __name__ == "__main__":
-    # Đường dẫn thư mục chứa ảnh gốc (unclip)
-    input_base_dir = r"D:\prj\results\map\unclip"
-    
-    # Đường dẫn thư mục lưu ảnh đã cắt (cliped)
-    output_base_dir = r"D:\prj\results\map\cliped"
+    # Danh sách các file TIFF đầu vào
+    input_tiffs = [
+        r"D:\prj\feature\NDBI_2024.tif",
+        r"D:\prj\feature\NDWI_2024.tif"
+    ]
 
     # Đường dẫn shapefile để cắt
     shapefile = r"C:\Users\Admin\Desktop\GL\gl.shp"
-    
-    print("BẮT ĐẦU CẮT HÀNG LOẠT ẢNH TIFF")
+
+    print("BẮT ĐẦU CẮT ẢNH TIFF")
     print("="*60)
-    print(f"Input: {input_base_dir}")
-    print(f"Output: {output_base_dir}")
     print(f"Shapefile: {shapefile}")
     print("="*60)
-    
+
     # Kiểm tra xem shapefile có tồn tại không
     if not os.path.exists(shapefile):
         print(f"LỖI: Shapefile không tồn tại: {shapefile}")
     else:
-        batch_cut_tiff(input_base_dir, output_base_dir, shapefile)
+        # Xử lý từng file TIFF
+        for input_tiff in input_tiffs:
+            print(f"\nĐang xử lý: {input_tiff}")
+            # Gọi hàm cắt ảnh và ghi đè lên ảnh cũ
+            if cut_tiff(input_tiff, shapefile, input_tiff):
+                print(f"✓ Hoàn thành cắt ảnh và ghi đè: {os.path.basename(input_tiff)}")
+            else:
+                print(f"✗ Lỗi khi cắt ảnh: {os.path.basename(input_tiff)}")
+        
+        print("\n" + "="*60)
+        print("HOÀN THÀNH XỬ LÝ TẤT CẢ CÁC FILE")

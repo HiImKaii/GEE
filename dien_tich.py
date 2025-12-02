@@ -77,13 +77,15 @@ def tinh_dien_tich_pixel(duong_dan_tiff):
         return None
 
 
-def xu_ly_thu_muc(thu_muc_goc, file_csv_output):
+def xu_ly_thu_muc(thu_muc_goc, file_csv_output, subfolders=['rf', 'svr', 'xgb'], exclude_folders=['thresholded']):
     """
-    Xử lý tất cả các file TIFF trong thư mục và tính diện tích
+    Xử lý tất cả các file TIFF trong các thư mục con được chỉ định và tính diện tích
     
     Args:
-        thu_muc_goc: Đường dẫn thư mục gốc chứa các file TIFF
+        thu_muc_goc: Đường dẫn thư mục gốc chứa các thư mục con
         file_csv_output: Đường dẫn file CSV để lưu kết quả
+        subfolders: Danh sách các thư mục con cần xử lý
+        exclude_folders: Danh sách các thư mục cần bỏ qua
     """
     thu_muc_goc = Path(thu_muc_goc)
     
@@ -91,14 +93,30 @@ def xu_ly_thu_muc(thu_muc_goc, file_csv_output):
         print(f"Thư mục không tồn tại: {thu_muc_goc}")
         return
     
-    # Tìm tất cả file TIFF
+    # Tìm tất cả file TIFF trong các thư mục con được chỉ định
     cac_file_tiff = []
-    for root, dirs, files in os.walk(thu_muc_goc):
-        for file in files:
-            if (file.lower().endswith('.tif') or file.lower().endswith('.tiff')) and \
-               not file.endswith('.aux.xml'):
-                cac_file_tiff.append(Path(root) / file)
     
+    for subfolder in subfolders:
+        subfolder_path = thu_muc_goc / subfolder
+        
+        if not subfolder_path.exists():
+            print(f"⚠ Thư mục không tồn tại: {subfolder}")
+            continue
+        
+        print(f"\nQuét thư mục: {subfolder}")
+        
+        # Tìm file TIFF trong thư mục con
+        for file in subfolder_path.glob("*.tif"):
+            if not file.name.endswith('.aux.xml'):
+                if not any(excluded in str(file) for excluded in exclude_folders):
+                    cac_file_tiff.append(file)
+        
+        for file in subfolder_path.glob("*.tiff"):
+            if not file.name.endswith('.aux.xml'):
+                if not any(excluded in str(file) for excluded in exclude_folders):
+                    cac_file_tiff.append(file)
+    
+    print(f"\n{'='*80}")
     print(f"Tìm thấy {len(cac_file_tiff)} file TIFF")
     
     # Danh sách để lưu kết quả
@@ -173,8 +191,14 @@ def xu_ly_thu_muc(thu_muc_goc, file_csv_output):
 
 
 if __name__ == "__main__":
-    # Đường dẫn thư mục chứa các file TIFF đã phân ngưỡng
-    thu_muc_du_lieu = r"D:\prj\results\map\thresholded"
+    # Đường dẫn thư mục gốc chứa các thư mục con (rf, svr, xgb)
+    thu_muc_du_lieu = r"D:\prj\results\map\threshold"
+    
+    # Các thư mục con cần xử lý
+    subfolders = ['rf', 'svr', 'xgb']
+    
+    # Các thư mục cần bỏ qua
+    exclude_folders = ['thresholded']
     
     # Tạo tên file CSV với timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -183,12 +207,14 @@ if __name__ == "__main__":
     print("="*80)
     print("CHƯƠNG TRÌNH TÍNH DIỆN TÍCH THEO NGƯỠNG")
     print("="*80)
-    print(f"Thư mục dữ liệu: {thu_muc_du_lieu}")
+    print(f"Thư mục gốc: {thu_muc_du_lieu}")
+    print(f"Thư mục con xử lý: {', '.join(subfolders)}")
+    print(f"Thư mục bỏ qua: {', '.join(exclude_folders)}")
     print(f"File kết quả: {file_csv_output}")
     print("="*80)
     print()
     
     # Xử lý thư mục
-    xu_ly_thu_muc(thu_muc_du_lieu, file_csv_output)
+    xu_ly_thu_muc(thu_muc_du_lieu, file_csv_output, subfolders, exclude_folders)
     
     print("\nHoàn thành!")

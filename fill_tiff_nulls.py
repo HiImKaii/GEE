@@ -188,74 +188,84 @@ def fill_null_values(input_path, output_path, shapefile_path=None, nodata_value=
     print(f"Output saved to: {output_path}")
 
 
-def process_directory(input_dir, output_dir, shapefile_path=None, nodata_value=None, max_iterations=1000, recursive=False):
+def process_directory_inplace(input_dir, shapefile_path=None, nodata_value=None, max_iterations=1000, subfolders=['rf', 'svr', 'xgb'], exclude_folders=['thresholded']):
     """
-    Process all TIFF files in a directory.
+    Process all TIFF files in specified subdirectories and replace them in place.
     
     Parameters:
     -----------
     input_dir : str
-        Directory containing input TIFF files
-    output_dir : str
-        Directory for output TIFF files
+        Directory containing subdirectories with TIFF files
     shapefile_path : str, optional
         Path to shapefile defining the valid boundary area
     nodata_value : float, optional
         Value representing nodata
     max_iterations : int
         Maximum number of iterations for filling
-    recursive : bool
-        If True, search for TIFF files in subdirectories as well
+    subfolders : list
+        List of subdirectory names to process
+    exclude_folders : list
+        List of subdirectory names to exclude
     """
+    from pathlib import Path
     
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
+    input_path = Path(input_dir)
     
-    # Find all TIFF files
-    tiff_extensions = ['.tif', '.tiff']
-    tiff_files = []
+    # Count statistics
+    total_files = 0
+    success_count = 0
+    fail_count = 0
     
-    if recursive:
-        # Search recursively in subdirectories
-        for root, dirs, files in os.walk(input_dir):
-            for f in files:
-                if os.path.splitext(f.lower())[1] in tiff_extensions:
-                    rel_path = os.path.relpath(root, input_dir)
-                    tiff_files.append((os.path.join(root, f), rel_path, f))
-    else:
-        # Only search in the specified directory
-        for f in os.listdir(input_dir):
-            full_path = os.path.join(input_dir, f)
-            if os.path.isfile(full_path) and os.path.splitext(f.lower())[1] in tiff_extensions:
-                tiff_files.append((full_path, '', f))
-    
-    print(f"Found {len(tiff_files)} TIFF files to process")
-    
-    for file_info in tiff_files:
-        input_path, rel_path, filename = file_info
+    # Process each specified subfolder
+    for subfolder in subfolders:
+        subfolder_path = input_path / subfolder
+        
+        if not subfolder_path.exists():
+            print(f"⚠ Thư mục không tồn tại: {subfolder}")
+            continue
         
         print(f"\n{'='*60}")
-        print(f"Processing: {os.path.join(rel_path, filename) if rel_path else filename}")
+        print(f"Đang xử lý thư mục: {subfolder}")
         print(f"{'='*60}")
         
-        # Create subdirectory structure in output directory if needed
-        if rel_path:
-            output_subdir = os.path.join(output_dir, rel_path)
-            os.makedirs(output_subdir, exist_ok=True)
-        else:
-            output_subdir = output_dir
+        # Find all TIFF files in this subfolder
+        tiff_files = list(subfolder_path.glob("*.tif")) + list(subfolder_path.glob("*.tiff"))
         
-        output_filename = os.path.splitext(filename)[0] + '_filled' + os.path.splitext(filename)[1]
-        output_path = os.path.join(output_subdir, output_filename)
-        
-        try:
-            fill_null_values(input_path, output_path, shapefile_path, nodata_value, max_iterations)
-        except Exception as e:
-            print(f"Error processing {filename}: {str(e)}")
-            continue
+        for tiff_file in tiff_files:
+            # Skip if file is in excluded folders
+            if any(excluded in str(tiff_file) for excluded in exclude_folders):
+                continue
+            
+            total_files += 1
+            
+            print(f"\n[{total_files}] Đang xử lý: {subfolder}/{tiff_file.name}")
+            
+            # Create temporary output file
+            temp_file = tiff_file.parent / f"temp_filled_{tiff_file.name}"
+            
+            try:
+                # Fill null values and save to temp file
+                fill_null_values(str(tiff_file), str(temp_file), shapefile_path, nodata_value, max_iterations)
+                
+                # Replace original file with filled file
+                tiff_file.unlink()
+                temp_file.rename(tiff_file)
+                print(f"  → Đã thay thế file gốc thành công")
+                success_count += 1
+                
+            except Exception as e:
+                print(f"  ✗ Lỗi khi xử lý {tiff_file.name}: {str(e)}")
+                # Clean up temp file if exists
+                if temp_file.exists():
+                    temp_file.unlink()
+                fail_count += 1
     
+    # Summary
     print(f"\n{'='*60}")
-    print("All files processed!")
+    print("TỔNG KẾT:")
+    print(f"  Tổng số file: {total_files}")
+    print(f"  Thành công: {success_count}")
+    print(f"  Thất bại: {fail_count}")
     print(f"{'='*60}")
 
 
@@ -263,22 +273,50 @@ if __name__ == "__main__":
     # Shapefile path for boundary constraint
     shapefile_boundary = r"C:\Users\Admin\Desktop\GL\gl.shp"
     
-    # Example usage - process single file
-    # input_file = r"D:\prj\results\map\cliped\rf\cliped_flood_probability_pso_RF.tif"
-    # output_file = r"D:\prj\results\map\cliped\filled\cliped_flood_probability_pso_RF_filled.tif"
-    # fill_null_values(input_file, output_file, shapefile_boundary)
+    # Danh sách các file TIFF cần xử lý
+    input_files = [
+        r"D:\prj\feature\gialai_curvature.tif",
+        r"D:\prj\feature\gialai_twi.tif",
+        r"D:\prj\feature\rainfall_30m.tif"
+    ]
     
-    # Process all files in directory and subdirectories
-    input_directory = r"D:\prj\results\map\cliped"
-    output_directory = r"D:\prj\results\map\cliped\filled"
+    print("BẮT ĐẦU FILL GIÁ TRỊ NULL/NaN TRONG ẢNH TIFF")
+    print("="*60)
+    print(f"Shapefile: {shapefile_boundary}")
+    print(f"Số lượng file cần xử lý: {len(input_files)}")
+    print("="*60)
     
-    # You can specify nodata value if needed, or set to None to auto-detect
-    # Common nodata values: -9999, -3.4028235e+38, np.nan
-    process_directory(
-        input_directory, 
-        output_directory,
-        shapefile_path=shapefile_boundary,  # Use shapefile to constrain fill area
-        nodata_value=None,  # Auto-detect from file
-        max_iterations=1000,  # Increase if needed for large gaps
-        recursive=True  # Search in subdirectories (rf, svr, xgb)
-    )
+    # Xử lý từng file
+    for input_file in input_files:
+        print(f"\n{'='*60}")
+        print(f"Đang xử lý: {os.path.basename(input_file)}")
+        print(f"{'='*60}")
+        
+        # Tạo file tạm thời
+        temp_file = input_file.replace('.tif', '_temp.tif')
+        
+        try:
+            # Fill null values
+            fill_null_values(
+                input_file,
+                temp_file,
+                shapefile_path=shapefile_boundary,
+                nodata_value=None,  # Auto-detect from file
+                max_iterations=1000
+            )
+            
+            # Ghi đè file gốc
+            if os.path.exists(temp_file):
+                os.remove(input_file)
+                os.rename(temp_file, input_file)
+                print(f"✓ Đã ghi đè file gốc: {os.path.basename(input_file)}")
+        
+        except Exception as e:
+            print(f"✗ Lỗi khi xử lý {os.path.basename(input_file)}: {str(e)}")
+            # Xóa file tạm nếu có lỗi
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+    
+    print(f"\n{'='*60}")
+    print("HOÀN THÀNH XỬ LÝ TẤT CẢ CÁC FILE")
+    print(f"{'='*60}")
